@@ -27,7 +27,6 @@ from segment_anything.utils.amg import rle_to_mask
 import pyrealsense2 as rs 
 import json
 import keyboard as kb
-import time
 
 from ism.utils.pose_utils import get_obj_poses_from_template_level, load_index_level_in_level2
 from ism.utils.bbox_utils import CropResizePad
@@ -74,15 +73,15 @@ def visualize_pem(rgb, pred_rot, pred_trans, model_points, K, save_path):
     return vis_pem
 
 def batch_camera_data(cam_path, device):
-    batch = {}
+    cam_batched = {}
     with open(cam_path, "r") as f:
         cam_info = json.load(f)
     cam = cam_info[next(iter(cam_info))]
     cam_K = np.array(cam['cam_K']).reshape((3, 3))
     depth_scale = np.array(cam['depth_scale'])
-    batch["cam_intrinsic"] = torch.from_numpy(cam_K).unsqueeze(0).to(device)
-    batch['depth_scale'] = torch.from_numpy(depth_scale).unsqueeze(0).to(device)
-    return batch
+    cam_batched["cam_intrinsic"] = torch.from_numpy(cam_K).unsqueeze(0).to(device)
+    cam_batched['depth_scale'] = torch.from_numpy(depth_scale).unsqueeze(0).to(device)
+    return cam_batched
 
 def _get_template(path, cfg, tem_index=1):
     rgb_path = os.path.join(path, 'rgb_'+str(tem_index)+'.png')
@@ -335,27 +334,27 @@ def run_inference(model, cfg, output_dir, input_dir, test_targets_path, ism_dete
             pred_trans = np.array([item["t"] for item in res if item["obj_id"] == str(obj_id)])
             cam_K = np.array(cam['cam_K']).reshape((1, 3, 3)).repeat(pred_rot.shape[0], axis=0)
 
-            vis_img = visualize(img, pred_rot, pred_trans, model_points*1000, cam_K, save_path)
+            vis_img = visualize_pem(img, pred_rot, pred_trans, model_points*1000, cam_K, save_path)
             vis_img.save(save_path)
 
-def infer_pose(model, color_image, depth_image, batch, obj_id, mesh, visualize=False):
+def infer_pose(seg_model, pem_model, color_image, depth_image, batch, obj_id, mesh, visualize=False):
     # generate masks
     rgb = Image.fromarray(color_image)
-    detections = model.segmentor_model.generate_masks(np.array(rgb))
+    detections = seg_model.segmentor_model.generate_masks(np.array(rgb))
     detections = Detections(detections)
-    query_decriptors, query_appe_descriptors = model.descriptor_model.forward(np.array(rgb), detections)
+    query_decriptors, query_appe_descriptors = seg_model.descriptor_model.forward(np.array(rgb), detections)
     # matching descriptors
     (
         idx_selected_proposals,
         pred_idx_objects,
         semantic_score,
         best_template,
-    ) = model.compute_semantic_score(query_decriptors)
+    ) = seg_model.compute_semantic_score(query_decriptors)
     # update detections
     detections.filter(idx_selected_proposals)
     query_appe_descriptors = query_appe_descriptors[idx_selected_proposals, :]
     # compute the appearance score
-    appe_scores, ref_aux_descriptor= model.compute_appearance_score(best_template, pred_idx_objects, query_appe_descriptors)
+    appe_scores, ref_aux_descriptor= seg_model.compute_appearance_score(best_template, pred_idx_objects, query_appe_descriptors)
 
     depth = depth_image.astype(np.int32)
     batch["depth"] = torch.from_numpy(depth).unsqueeze(0).to(device)
@@ -363,15 +362,15 @@ def infer_pose(model, color_image, depth_image, batch, obj_id, mesh, visualize=F
     template_poses = get_obj_poses_from_template_level(level=2, pose_distribution="all")
     template_poses[:, :3, 3] *= 0.4 # type: ignore
     poses = torch.tensor(template_poses).to(torch.float32).to(device)
-    model.ref_data["poses"] =  poses[load_index_level_in_level2(0, "all"), :, :]
+    seg_model.ref_data["poses"] =  poses[load_index_level_in_level2(0, "all"), :, :]
 
     model_points = mesh.sample(2048).astype(np.float32) / 1000.0
-    model.ref_data["pointcloud"] = torch.tensor(model_points).unsqueeze(0).data.to(device)
+    seg_model.ref_data["pointcloud"] = torch.tensor(model_points).unsqueeze(0).data.to(device)
     
-    image_uv = model.project_template_to_image(best_template, pred_idx_objects, batch, detections.masks)
+    image_uv = seg_model.project_template_to_image(best_template, pred_idx_objects, batch, detections.masks)
 
-    geometric_score, visible_ratio = model.compute_geometric_score(
-        image_uv, detections, query_appe_descriptors, ref_aux_descriptor, visible_thred=model.visible_thred
+    geometric_score, visible_ratio = seg_model.compute_geometric_score(
+        image_uv, detections, query_appe_descriptors, ref_aux_descriptor, visible_thred=seg_model.visible_thred
         )
     
     # final score
@@ -391,61 +390,13 @@ if __name__ == "__main__":
     parser.add_argument("--segmentor_model", default='sam', help="The segmentor model in ISM")
     parser.add_argument("--object", default='bolt', nargs="?", help="Object name")
     parser.add_argument("--stability_score_thresh", default=0.97, type=float, help="stability_score_thresh of SAM")
-    
-    #############################################################################
-    # pem
-    parser.add_argument("--gpus", type=str,  default="0", help="path to pretrain model")
-    parser.add_argument("--model",  type=str, default="pose_estimation_model", help="path to model file")
-    parser.add_argument("--config", type=str,  default="config/base.yaml", help="path to config file, different config.yaml use different config")
-    parser.add_argument("--iter", type=int, default=600000, help="epoch num. for testing")
-    parser.add_argument("--exp_id", type=int, default=0, help="")
-    # input
-    parser.add_argument("--output_dir", nargs="?", help="Path to root directory of the output")
-    parser.add_argument("--input_dir", nargs="?", help="Path to root directory of the input")
-    parser.add_argument("--template_dir", nargs="?", help="Path to templates")
-    parser.add_argument("--cad_dir", nargs="?", help="Path to CAD folder")
-    parser.add_argument("--targets_path", default='?', nargs="?", help="Path to test/val targets json")
-    parser.add_argument("--detection_path", nargs="?", help="Path to segmentation information(generated by ISM)")
     parser.add_argument("--det_score_thresh", default=0.4, help="The score threshold of detection")
+
     args = parser.parse_args()
-    exp_name = args.model + '_' + \
-        os.path.splitext(args.config.split("/")[-1])[0] + '_id' + str(args.exp_id)
-    log_dir = os.path.join("log", exp_name)
-
-    cfg = gorilla.Config.fromfile(args.config)
-    cfg.exp_name = exp_name
-    cfg.gpus     = args.gpus
-    cfg.model_name = args.model
-    cfg.log_dir  = log_dir
-    cfg.test_iter = args.iter
-    cfg.det_score_thresh = args.det_score_thresh
-    gorilla.utils.set_cuda_visible_devices(gpu_ids = cfg.gpus)
-
-    random.seed(cfg.rd_seed)
-    torch.manual_seed(cfg.rd_seed)
-
-    print("Initializing model...")
-    MODEL = importlib.import_module(cfg.model_name)
-    model = MODEL.Net(cfg.model)
-    model = model.cuda()
-    model.eval()
-    checkpoint = os.path.join(os.path.dirname((os.path.abspath(__file__))), 'checkpoints', 'sam-6d-pem-base.pth')
-    gorilla.solver.load_checkpoint(model=model, filename=checkpoint)
-
-    input_folders = sorted(os.listdir(args.input_dir))
-    with Progress() as progress:
-        input_tqdm = progress.add_task('input_folders', total=len(input_folders))    
-        for input_folder in input_folders:
-            input_dir = os.path.join(args.input_dir, input_folder)
-            output_dir = os.path.join(args.output_dir, input_folder)
-            run_inference(model, cfg, output_dir, input_dir, args.targets_path, args.detection_path, args.template_dir, args.cad_dir)
-            progress.update(input_tqdm, advance=1)
-    #########################################################################
-    
-    
-    args = parser.parse_args()
-
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+
+    ######################## Initialize Segmentation Model ########################
     
     with initialize(version_base=None, config_path="ism/configs"):
         cfg = compose(config_name='run_inference.yaml')
@@ -462,25 +413,37 @@ if __name__ == "__main__":
         raise ValueError("The segmentor_model {} is not supported now!".format(segmentor_model))
 
     logging.info("Initializing model")
-    model = instantiate(cfg.model)
+    seg_model = instantiate(cfg.model)
     
-    model.descriptor_model.model = model.descriptor_model.model.to(device)
-    model.descriptor_model.model.device = device
+    seg_model.descriptor_model.model = seg_model.descriptor_model.model.to(device)
+    seg_model.descriptor_model.model.device = device
     # if there is predictor in the model, move it to device
-    if hasattr(model.segmentor_model, "predictor"):
-        model.segmentor_model.predictor.model = (
-            model.segmentor_model.predictor.model.to(device)
+    if hasattr(seg_model.segmentor_model, "predictor"):
+        seg_model.segmentor_model.predictor.model = (
+            seg_model.segmentor_model.predictor.model.to(device)
         )
     else:
-        model.segmentor_model.model.setup_model(device=device, verbose=True)
+        seg_model.segmentor_model.model.setup_model(device=device, verbose=True)
     logging.info(f"Moving models to {device} done!")
+    
+    ######################## Initialize Pose Estimation Model ########################
 
-    base_dir = os.path.dirname(os.path.abspath(__file__))
+    cfg = gorilla.Config.fromfile("pem/config/base.yaml")
+    cfg.det_score_thresh = args.det_score_thresh
+    gorilla.utils.set_cuda_visible_devices(gpu_ids = "0")
+
+    print("Initializing pose estimation model...")
+    PEM_MODEL = importlib.import_module("pose_estimation_model")
+    pem_model = PEM_MODEL.Net(cfg.model)
+    pem_model = pem_model.cuda()
+    pem_model.eval()
+    checkpoint = os.path.join(os.path.dirname((os.path.abspath(__file__))), 'checkpoints', 'sam-6d-pem-base.pth')
+    gorilla.solver.load_checkpoint(model=pem_model, filename=checkpoint)
 
     ######################## Prepare Reference Data for Model ########################
 
     cam_path = os.path.join(base_dir, f'data/cam.json')
-    batch = batch_camera_data(cam_path, device)
+    cam_batched = batch_camera_data(cam_path, device)
 
     ######################## Prepare Reference Data for Model ########################
     cad_path = os.path.join(base_dir, f'data/{args.object}/{args.object}.ply')
@@ -509,11 +472,11 @@ if __name__ == "__main__":
     templates = proposal_processor(images=templates, boxes=boxes).to(device)
     masks_cropped = proposal_processor(images=masks, boxes=boxes).to(device)
 
-    model.ref_data = {}
-    model.ref_data["descriptors"] = model.descriptor_model.compute_features(
+    seg_model.ref_data = {}
+    seg_model.ref_data["descriptors"] = seg_model.descriptor_model.compute_features(
                     templates, token_name="x_norm_clstoken"
                 ).unsqueeze(0).data
-    model.ref_data["appe_descriptors"] = model.descriptor_model.compute_masked_patch_feature(
+    seg_model.ref_data["appe_descriptors"] = seg_model.descriptor_model.compute_masked_patch_feature(
                     templates, masks_cropped[:, 0, :, :]
                 ).unsqueeze(0).data
 
@@ -537,7 +500,7 @@ if __name__ == "__main__":
         depth_frame = frame.get_depth_frame()
         color_image = np.asanyarray(color_frame.get_data())
         depth_image = np.asanyarray(depth_frame.get_data())
-        infer_pose(model, color_image, depth_image, batch, obj_id, mesh, visualize=False)
+        infer_pose(seg_model, pem_model, color_image, depth_image, cam_batched, obj_id, mesh, visualize=False)
 
         if kb.is_pressed('esc'):
             print("Esc pressed, exiting inference...")
