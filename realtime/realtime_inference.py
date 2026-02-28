@@ -76,7 +76,7 @@ class SAM2CameraStreamWrapper:
                 obj_id=1,
                 mask=golden_mask
             )
-        return video_res_masks[0, 0] > 0.0
+        return (video_res_masks[0, 0] > 0.0).cpu().numpy()
 
     @torch.inference_mode()
     def track_next_frame(self, frame_rgb):
@@ -164,28 +164,24 @@ class LeanDINOv2Descriptor:
     def process_and_get_descriptors(self, image_rgb_tensor, masks, boxes):
         """
         Takes the full image and SAM2 bounding boxes/masks. 
-        Crops, masks, resizes, and feeds them to DINOv2 in one shot.
+        Crops, masks, resizes, and feeds them to DINOv2 in memory-safe chunks.
         """
         N = len(masks)
         if N == 0: return None, None
         
-        # Prepare the image batch
-        image_rgb_tensor = self.normalize(image_rgb_tensor)
+        # CRITICAL FIX: Do NOT normalize the image yet. Keep it in [0, 1] range.
         
         processed_crops = []
         for i in range(N):
             x, y, w, h = boxes[i].int().tolist()
-            # Failsafe for out-of-bounds or zero-area boxes
             if w <= 0 or h <= 0: continue
             
-            # Crop image and mask
             crop_img = image_rgb_tensor[:, y:y+h, x:x+w]
             crop_mask = masks[i:i+1, y:y+h, x:x+w]
             
-            # Apply mask to image (background becomes zero)
+            # Apply mask to image (Background becomes TRUE [0,0,0] black)
             masked_crop = crop_img * crop_mask
             
-            # Pad to square to preserve aspect ratio, then resize to 224x224
             sq_size = max(w, h)
             pad_w = sq_size - w
             pad_h = sq_size - h
@@ -199,26 +195,32 @@ class LeanDINOv2Descriptor:
         if not processed_crops: return None, None
         
         batch_crops = torch.stack(processed_crops) # [N, 3, 224, 224]
-        
-        # Feed to DINOv2
-        # --- DEBUG: VISUALIZE DINOV2 INPUTS ---
-        import torchvision
-        # Grab the first 16 crops to inspect
-        debug_crops = batch_crops[:16].float().cpu() 
-        
-        # Reverse ImageNet Normalization to make it viewable
-        mean = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1)
-        std = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1)
-        debug_crops = (debug_crops * std) + mean
-        debug_crops = torch.clamp(debug_crops, 0, 1)
-        # --------------------------------------
-        # Save as a grid
-        torchvision.utils.save_image(debug_crops, "debug_dinov2_inputs.jpg", nrow=4)
-        print("DEBUG: Saved 'debug_dinov2_inputs.jpg'. INSPECT THIS FILE!")
 
-        features = self.model.forward_features(batch_crops)
-        cls_tokens = features["x_norm_clstoken"]
-        patch_tokens = features["x_norm_patchtokens"]
+        # --- DEBUG: VISUALIZE DINOV2 INPUTS (Now perfectly black!) ---
+        # import torchvision
+        # debug_crops = batch_crops[:16].float().cpu() 
+        # torchvision.utils.save_image(debug_crops, "debug_dinov2_inputs.jpg", nrow=4)
+        # -------------------------------------------------------------
+
+        # NOW apply ImageNet normalization to the batch
+        batch_crops = self.normalize(batch_crops)
+        
+        # CRITICAL FIX 2: Chunk the DINOv2 forward pass to prevent OOM
+        chunk_size = 16
+        all_cls = []
+        all_patch = []
+        
+        for start_idx in range(0, N, chunk_size):
+            end_idx = min(start_idx + chunk_size, N)
+            chunk = batch_crops[start_idx:end_idx].to(torch.bfloat16) # Ensure bfloat16
+            
+            features = self.model.forward_features(chunk)
+            all_cls.append(features["x_norm_clstoken"])
+            all_patch.append(features["x_norm_patchtokens"])
+            
+        # Stitch chunks back together
+        cls_tokens = torch.cat(all_cls, dim=0)
+        patch_tokens = torch.cat(all_patch, dim=0)
         
         return cls_tokens, patch_tokens
 
@@ -248,7 +250,7 @@ class RealTimeSegmentor:
         self.state = "ACQUISITION"
         self.templates_cls = None
         self.tracking_threshold = 0.0 # SAM2 logit tracking threshold
-        self.acquisition_threshold = 0.65 # DINOv2 Cosine Similarity threshold
+        self.acquisition_threshold = 0.5 # DINOv2 Cosine Similarity threshold
 
     def load_templates(self, template_dir):
         """
@@ -338,14 +340,14 @@ class RealTimeSegmentor:
             if mask is not None:
                 self.state = "TRACKING"
                 # Pass the first frame and the golden mask to initialize SAM 2's memory bank
-                result_mask = self.stream_tracker.init_stream(frame_rgb, golden_mask)
+                result_mask = self.seg_tracker.init_stream(frame_rgb, mask)
                 print("Target ACQUIRED. Switching to TRACKING mode.")
             else:
                 result_mask = None
                 
         elif self.state == "TRACKING":
             # Track using the sliding-window memory
-            mask, logit_score = self.stream_tracker.track_next_frame(frame_rgb)
+            mask, logit_score = self.seg_tracker.track_next_frame(frame_rgb)
             
             # State Transition: If confidence drops below threshold or mask vanishes
             if logit_score < self.tracking_threshold or mask.sum() < 50:
@@ -381,14 +383,14 @@ class RealTimeSegmentor:
             if query_cls is None: return None
 
             # 3. Match against Templates
-            best_scores, _ = self.img_descriptor.compute_semantic_match(query_cls, self.templates_cls)
+            best_scores, best_template_idx = self.img_descriptor.compute_semantic_match(query_cls, self.templates_cls)
             # --- DEBUG: NUMERICAL SCORE SPREAD ---
-            # Sort scores to see the top 5 highest matches
-            sorted_scores, sorted_indices = torch.sort(best_scores, descending=True)
-            top_5_scores = sorted_scores[:5].tolist()
+            # # Sort scores to see the top 5 highest matches
+            # sorted_scores, sorted_indices = torch.sort(best_scores, descending=True)
+            # top_5_scores = sorted_scores[:5].tolist()
             
-            print(f"DEBUG: Top 5 Cosine Similarities: {[round(s, 3) for s in top_5_scores]}")
-            print(f"DEBUG: Mean Score: {best_scores.mean().item():.3f} | Min: {best_scores.min().item():.3f}")
+            # print(f"DEBUG: Top 5 Cosine Similarities: {[round(s, 3) for s in top_5_scores]}")
+            # print(f"DEBUG: Mean Score: {best_scores.mean().item():.3f} | Min: {best_scores.min().item():.3f}")
             # -------------------------------------
             
             # 4. Find the winner
@@ -396,23 +398,23 @@ class RealTimeSegmentor:
             if best_scores[winner_idx] > self.acquisition_threshold:
                 print(f"Target Found! DINOv2 Score: {best_scores[winner_idx]:.2f}")
                 # --- DEBUG: VISUALIZE THE WINNING MATCH ---
-                win_mask = sam_outputs[winner_idx]['segmentation']
-                win_bbox = sam_outputs[winner_idx]['bbox'] # [x, y, w, h]
-                x, y, w, h = [int(v) for v in win_bbox]
+                # win_mask = sam_outputs[winner_idx]['segmentation']
+                # win_bbox = sam_outputs[winner_idx]['bbox'] # [x, y, w, h]
+                # x, y, w, h = [int(v) for v in win_bbox]
                 
-                # Crop the live frame
-                live_crop = frame_rgb[y:y+h, x:x+w].copy()
-                live_crop[~win_mask[y:y+h, x:x+w]] = 0 # Apply mask
-                live_crop = cv2.resize(live_crop, (224, 224))
+                # # Crop the live frame
+                # live_crop = frame_rgb[y:y+h, x:x+w].copy()
+                # live_crop[~win_mask[y:y+h, x:x+w]] = 0 # Apply mask
+                # live_crop = cv2.resize(live_crop, (224, 224))
                 
-                # We matched against self.templates_cls[best_template_idx[winner_idx]]
-                # (Assuming you saved the template images during load_templates)
-                matched_template_idx = best_template_idx[winner_idx].item()
-                score = best_scores[winner_idx].item()
+                # # We matched against self.templates_cls[best_template_idx[winner_idx]]
+                # # (Assuming you saved the template images during load_templates)
+                # matched_template_idx = best_template_idx[winner_idx].item()
+                # score = best_scores[winner_idx].item()
                 
-                cv2.imwrite(f"debug_match_score_{score:.2f}.jpg", cv2.cvtColor(live_crop, cv2.COLOR_RGB2BGR))
-                print(f"DEBUG: Saved winning live crop to 'debug_match_score_{score:.2f}.jpg'")
-                print(f"DEBUG: This matched against Template Index #{matched_template_idx}")
+                # cv2.imwrite(f"debug_match_score_{score:.2f}.jpg", cv2.cvtColor(live_crop, cv2.COLOR_RGB2BGR))
+                # print(f"DEBUG: Saved winning live crop to 'debug_match_score_{score:.2f}.jpg'")
+                # print(f"DEBUG: This matched against Template Index #{matched_template_idx}")
                 # ------------------------------------------
                 return sam_outputs[winner_idx]['segmentation'] # Return boolean numpy mask
             
@@ -438,7 +440,13 @@ if __name__ == "__main__":
     # Build the SAM 2 Video Predictor for the Tracking phase
     seg_tracker = build_sam2_video_predictor(sam2_config, sam2_checkpoint, device=DEVICE).to(torch.bfloat16)
     # The AMG will ignore the video memory modules and just use the base image methods.
-    seg_generator = SAM2AutomaticMaskGenerator(seg_tracker)
+    seg_generator = SAM2AutomaticMaskGenerator(
+        model=seg_tracker,
+        points_per_side=16,     # Drops total points from 1024 to just 256!
+        points_per_batch=16,    # Processes only 16 points at a time in VRAM
+        stability_score_thresh=0.92, # Slightly relaxed to ensure we catch the object
+        min_mask_region_area=100     # Ignore tiny specs of dust/noise
+    )
 
     # Initialize our State Machine Tracker
     pipeline = RealTimeSegmentor(seg_generator, img_descriptor, seg_tracker, device=DEVICE)
@@ -480,8 +488,14 @@ if __name__ == "__main__":
             num_frames += 1
             # Vis
             if mask is not None:
-                # Need to convert mask to boolean if it isn't already for numpy indexing
+                # Bulletproof check: if it's a tensor, move it to CPU and make it numpy
+                if torch.is_tensor(mask):
+                    mask = mask.cpu().numpy()
+                
+                # Ensure it's boolean
                 bool_mask = mask > 0 
+                
+                # Apply the blue overlay
                 frame[bool_mask] = frame[bool_mask] * 0.5 + np.array([255, 0, 0], dtype=np.uint8) * 0.5
                 
             cv2.putText(frame, f"State: {state} | FPS: {fps:.1f}", (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,0), 2)
