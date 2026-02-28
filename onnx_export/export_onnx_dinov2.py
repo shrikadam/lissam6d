@@ -105,16 +105,6 @@ def test_inference_dino(image_path):
         # It's a grayscale image (2 dimensions)
         original_img = cv2.cvtColor(original_img, cv2.COLOR_GRAY2RGB)
 
-    # transform = transforms.Compose([
-    #     transforms.ToPILImage(),
-    #     transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
-    #     transforms.ToTensor(),
-    #     transforms.Normalize(mean=[0.485, 0.456, 0,406], std=[0.229, 0.224, 0.225])
-    # ])
-
-    # Base FP32 input for ONNX
-    # x_fp32 = transform(original_img).unsqueeze(0).numpy()
-
     # A. Resize using OpenCV (Much faster than PIL)
     img_resized = cv2.resize(original_img, (IMAGE_SIZE, IMAGE_SIZE), interpolation=cv2.INTER_LINEAR)
 
@@ -196,7 +186,7 @@ def test_inference_dino(image_path):
         for _ in range(5):
             ort_sess.run(None, input_dict)
 
-        # ---  BENCHMARK ---
+        # --- BENCHMARK ---
         num_runs = 20
         start_time = time.perf_counter()
         for _ in range(num_runs):

@@ -14,9 +14,9 @@ import glob
 from functools import partial
 import multiprocessing
 import trimesh
-from ism.utils.inout import save_json, load_json, save_json_bop23
 from ism.model.utils import BatchedData, Detections, convert_npz_to_json
 from ism.model.loss import MaskedPatch_MatrixSimilarity
+from ism.utils.inout import save_json, load_json, save_json_bop23
 from ism.utils.trimesh_utils import depth_image_to_pointcloud_translate_torch
 from ism.utils.pose_utils import get_obj_poses_from_template_level
 from ism.utils.bbox_utils import xyxy_to_xywh, compute_iou

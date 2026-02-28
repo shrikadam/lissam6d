@@ -1,0 +1,41 @@
+# Jetson-AI-Lab specialized index for JetPack 6.2 (CUDA 12.6)
+--index-url https://pypi.jetson-ai-lab.io/jp6/cu126
+
+# Core ML Frameworks (NVIDIA-optimized wheels)
+torch==2.8.0
+torchvision==0.23.0
+onnx
+onnxscript
+onnxruntime-gpu
+opencv-python
+# Strict versioning to prevent JetPack 6.2 / NumPy 2.0 crashes
+numpy<2.0
+
+# SAM6D & General Vision Dependencies
+fvcore
+xformers
+typeguard
+torchmetrics
+omegaconf
+ruamel.yaml
+hydra-colorlog
+hydra-core
+triton
+gdown
+pandas
+imageio
+rich
+pycocotools 
+distinctipy
+timm
+gorilla-core
+trimesh
+gpustat
+imgaug
+einops
+keyboard
+
+# Note: These usually require manual system-level setup on Jetson:
+# blenderproc (Requires heavy dependencies; often best in its own container)
+# pyrender (Requires OSMesa/EGL setup for headless Jetson)
+# pyrealsense2 (Best installed via apt: sudo apt install librealsense2-utils)

@@ -1,14 +1,13 @@
 import os
 import torch
 import torch.nn as nn
-from sam2.build_sam import build_sam2
 import onnx
 import onnxruntime
 from onnxruntime.quantization import quantize_dynamic, QuantType, shape_inference
 import numpy as np
 import cv2
 import matplotlib.pyplot as plt
-from sam2.build_sam import build_sam2, build_sam2_object_tracker
+from sam2.build_sam import build_sam2
 from sam2.sam2_image_predictor import SAM2ImagePredictor
 import math
 import time
@@ -198,7 +197,7 @@ def test_inference_sam2(image_path):
     )
     
     h, w = image.shape[:2]
-    input_point = np.array([[w // 3, 3 * h // 4]])
+    input_point = np.array([[w // 2, h // 2]])
     input_label = np.array([1]) # Foreground click
 
     # 4. Run the Benchmark Loop
@@ -286,6 +285,5 @@ def test_inference_sam2(image_path):
         clear_cuda_memory()
 
 if __name__ == "__main__":
-    # export_and_quantize_sam2()
-    clear_cuda_memory()
-    test_inference_sam2("giraffe.jpg")
+    export_and_quantize_sam2()
+    test_inference_sam2("traffic.png")

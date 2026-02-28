@@ -190,14 +190,12 @@ class CustomDINOv2(pl.LightningModule):
             features.cat(feats)
         return features.data
 
-
     @torch.no_grad()
     def forward_cls_token(self, image_np, proposals):
         processed_rgbs = self.process_rgb_proposals(
             image_np, proposals.masks, proposals.boxes
         )
         return self.forward_by_chunk(processed_rgbs)
-
 
     def process_masks_proposals(self, masks, boxes):
         """
@@ -246,7 +244,6 @@ class CustomDINOv2(pl.LightningModule):
             features_mask = features_mask.unsqueeze(-1).repeat(1, 1, features.shape[-1])
             features = F.normalize(features * features_mask, dim=-1)
         return features
-
 
     @torch.no_grad()
     def forward(self, image_np, proposals):
