@@ -1,3 +1,5 @@
 build
 *egg*
 __pycache__
+checkpoints/*.onnx
+checkpoints/trt_cache*
