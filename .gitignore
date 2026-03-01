@@ -1,0 +1,7 @@
+.venv
+build
+*egg*
+__pycache__
+data/cad
+data/templates
+checkpoints
