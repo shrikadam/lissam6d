@@ -1,9 +1,0 @@
-.venv
-build
-*egg*
-__pycache__
-data/cad
-data/templates
-checkpoints/*.pt
-checkpoints/*.onnx
-checkpoints/trt_cache*
