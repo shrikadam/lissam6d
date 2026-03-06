@@ -8,9 +8,11 @@ import cv2
 import trimesh
 import torchvision.transforms as transforms
 import gc
+import json
 import time
 import argparse
 import gorilla
+import pyrealsense2 as rs 
 
 from sam2.build_sam import build_sam2_video_predictor
 from sam2.automatic_mask_generator import SAM2AutomaticMaskGenerator
@@ -26,7 +28,7 @@ def clear_cuda_memory():
         torch.cuda.empty_cache()
         torch.cuda.ipc_collect()
 
-class PointNet2Wrapper:
+class PEMNetWrapper:
     def __init__(self, config_path, checkpoint_path, cad_path, device="cuda"):
         self.device = device
         self.cfg = gorilla.Config.fromfile(config_path)
@@ -539,6 +541,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Real-Time SAM6D Tracking")
     parser.add_argument("--template_dir", required=True, help="Path to object templates")
     parser.add_argument("--video_source", default="0", help="Camera ID (e.g., 0) or path to video file")
+    parser.add_argument("--cam_info", default="../data/cam.json", help="Camera calibration json file")
     args = parser.parse_args()
 
     DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -567,7 +570,7 @@ if __name__ == "__main__":
     pipeline = RealTimeObjectTracker(seg_generator, img_descriptor, seg_tracker, device=DEVICE)
 
     print("Initializing Pose Estimator...")
-    pem_tracker = PointNet2Wrapper(
+    pem_tracker = PEMNetWrapper(
         config_path="config/base.yaml",
         checkpoint_path="../checkpoints/sam-6d-pem-base.pth",
         cad_path=args.cad_path # Add this to your argparse!
@@ -578,6 +581,12 @@ if __name__ == "__main__":
     # 2. Offline Preparation
     # ==========================================
     pipeline.load_templates(args.template_dir)
+
+    with open(args.cam_info, "r") as f:
+        cam_info = json.load(f)
+    cam = cam_info[next(iter(cam_info))]
+    K = np.array(cam['cam_K']).reshape((3, 3))
+    depth_scale = np.array(cam['depth_scale'])
 
     # ==========================================
     # 3. Real-Time Inference Loop
@@ -647,7 +656,13 @@ if __name__ == "__main__":
                     R, t = pem_tracker.estimate_pose(color_image, depth_image, mask, K_matrix)
                     if R is not None:
                         print(f"Pose - Trans: {t.flatten()} | Rot: {R[0]}")
-                        # Use OpenCV to draw 3D bounding box projection here!
+                        frame_bgr = draw_6d_pose(
+                            frame=frame_bgr, 
+                            K=K_matrix, 
+                            R=R, 
+                            t=t, # Ensure this is in meters
+                            bbox_3d=pem_tracker.bbox_3d
+                        )
                 except Exception as e:
                     print(f"PEM Warning: {e}")
 
