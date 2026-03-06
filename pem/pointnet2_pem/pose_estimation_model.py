@@ -4,11 +4,11 @@ from feature_extraction import ViTEncoder
 from coarse_point_matching import CoarsePointMatching
 from fine_point_matching import FinePointMatching
 from transformer import GeometricStructureEmbedding
-from model_utils import sample_pts_feats
+from utils.model_utils import sample_pts_feats
 
-class PEMPoseNet(nn.Module):
+class PEMNet(nn.Module):
     def __init__(self, cfg):
-        super(PEMPoseNet, self).__init__()
+        super(PEMNet, self).__init__()
         self.cfg = cfg
         self.coarse_npoint = cfg.coarse_npoint
         self.fine_npoint = cfg.fine_npoint

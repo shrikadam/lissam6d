@@ -1,4 +1,3 @@
-
 import gorilla
 from tqdm import tqdm
 import argparse
@@ -20,8 +19,8 @@ sys.path.append(os.path.join(BASE_DIR, 'utils'))
 sys.path.append(os.path.join(BASE_DIR, 'model'))
 sys.path.append(os.path.join(BASE_DIR, 'model', 'pointnet2'))
 
-from solver import Solver, get_logger
-from loss_utils import Loss
+from pointnet2_pem.utils.solver import Solver, get_logger
+from pointnet2_pem.utils.loss_utils import Loss
 
 def get_parser():
     parser = argparse.ArgumentParser(

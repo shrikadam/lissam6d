@@ -1,12 +1,12 @@
 import torch
 import torch.nn as nn
 from transformer import GeometricTransformer
-from model_utils import (
+from utils.model_utils import (
     compute_feature_similarity,
     aug_pose_noise,
     compute_coarse_Rt,
 )
-from loss_utils import compute_correspondence_loss
+from utils.loss_utils import compute_correspondence_loss
 
 class CoarsePointMatching(nn.Module):
     def __init__(self, cfg, return_feat=False):

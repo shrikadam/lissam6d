@@ -5,7 +5,7 @@ from torch.nn import functional as F
 import torch.utils.model_zoo as model_zoo
 from functools import partial
 import timm.models.vision_transformer
-from model_utils import (
+from utils.model_utils import (
     LayerNorm2d,
     interpolate_pos_embed,
     get_chosen_pixel_feats,

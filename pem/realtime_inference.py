@@ -1,23 +1,23 @@
 import os
-import sys
 import numpy as np
 import torch
 import torch.nn.functional as F
 import torchvision.transforms as T
 from collections import OrderedDict
 import cv2
-import importlib
 import trimesh
 import torchvision.transforms as transforms
 import gc
 import time
 import argparse
-# SAM 2 Native Imports
-from sam2.build_sam import build_sam2, build_sam2_video_predictor
-from sam2.automatic_mask_generator import SAM2AutomaticMaskGenerator
-# Assuming this is placed where it can see the original SAM6D modules
-from utils.data_utils import get_point_cloud_from_depth, get_resize_rgb_choose
 import gorilla
+
+from sam2.build_sam import build_sam2_video_predictor
+from sam2.automatic_mask_generator import SAM2AutomaticMaskGenerator
+
+from pointnet2_pem.pose_estimation_model import PEMNet
+from pointnet2_pem.utils.data_utils import get_point_cloud_from_depth, get_resize_rgb_choose
+
 
 def clear_cuda_memory():
     """Forces Python and PyTorch to aggressively release GPU memory"""
@@ -33,8 +33,7 @@ class PointNet2Wrapper:
         
         # 1. Initialize the Pose Estimation Model
         print("Initializing PointNet++ Pose Estimation Model...")
-        MODEL = importlib.import_module(self.cfg.model_name)
-        self.model = MODEL.Net(self.cfg.model).to(self.device)
+        self.model = PEMNet(self.cfg.model).to(self.device)
         self.model.eval()
         
         gorilla.solver.load_checkpoint(model=self.model, filename=checkpoint_path)

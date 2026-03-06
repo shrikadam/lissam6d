@@ -9,7 +9,7 @@ import numpy as np
 import argparse
 
 # SAM 2 Native Imports
-from sam2.build_sam import build_sam2, build_sam2_video_predictor
+from sam2.build_sam import build_sam2_video_predictor
 from sam2.automatic_mask_generator import SAM2AutomaticMaskGenerator
 
 import gc
