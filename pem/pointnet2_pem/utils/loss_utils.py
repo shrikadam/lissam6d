@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from model_utils import pairwise_distance
+from .model_utils import pairwise_distance
 
 def compute_correspondence_loss(
     end_points,

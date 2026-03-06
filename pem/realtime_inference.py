@@ -539,6 +539,7 @@ class RealTimeObjectTracker:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Real-Time SAM6D Tracking")
+    parser.add_argument("--cad_path", required=True, help="Object CAD file")
     parser.add_argument("--template_dir", required=True, help="Path to object templates")
     parser.add_argument("--video_source", default="0", help="Camera ID (e.g., 0) or path to video file")
     parser.add_argument("--cam_info", default="../data/cam.json", help="Camera calibration json file")
@@ -571,9 +572,9 @@ if __name__ == "__main__":
 
     print("Initializing Pose Estimator...")
     pem_tracker = PEMNetWrapper(
-        config_path="config/base.yaml",
+        config_path="./pointnet2_pem/config/base.yaml",
         checkpoint_path="../checkpoints/sam-6d-pem-base.pth",
-        cad_path=args.cad_path # Add this to your argparse!
+        cad_path=args.cad_path
     )
     pem_tracker.load_templates(args.template_dir)
 
@@ -585,7 +586,7 @@ if __name__ == "__main__":
     with open(args.cam_info, "r") as f:
         cam_info = json.load(f)
     cam = cam_info[next(iter(cam_info))]
-    K = np.array(cam['cam_K']).reshape((3, 3))
+    K_matrix = np.array(cam['cam_K']).reshape((3, 3))
     depth_scale = np.array(cam['depth_scale'])
 
     # ==========================================
@@ -610,8 +611,8 @@ if __name__ == "__main__":
     cfg = rs.config()
     aligner = rs.align(rs.stream.color)
 
-    cfg.enable_stream(rs.stream.color, 1280, 720, rs.format.bgr8, 30)
-    cfg.enable_stream(rs.stream.depth, 1280, 720, rs.format.z16, 30)
+    cfg.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
+    cfg.enable_stream(rs.stream.depth, 640, 480, rs.format.z16, 30)
 
     pipe.start(cfg)
 

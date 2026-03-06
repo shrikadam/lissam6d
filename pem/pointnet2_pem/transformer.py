@@ -4,8 +4,8 @@ import torch.nn.functional as F
 import numpy as np
 from typing import Union, Dict, Optional, Tuple
 from einops import rearrange
-from utils.model_utils import pairwise_distance
-from pointnet2.pointnet2_utils import gather_operation
+from .utils.model_utils import pairwise_distance
+from .pointnet2.pointnet2_utils import gather_operation
 
 NORM_LAYERS = {
     'BatchNorm1d': nn.BatchNorm1d,

@@ -1,11 +1,11 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from transformer import SparseToDenseTransformer
-from utils.model_utils import compute_feature_similarity, compute_fine_Rt
-from utils.loss_utils import compute_correspondence_loss
-from pointnet2.pointnet2_utils import QueryAndGroup
-from pointnet2.pytorch_utils import SharedMLP, Conv1d
+from .transformer import SparseToDenseTransformer
+from .utils.model_utils import compute_feature_similarity, compute_fine_Rt
+from .utils.loss_utils import compute_correspondence_loss
+from .pointnet2.pointnet2_utils import QueryAndGroup
+from .pointnet2.pytorch_utils import SharedMLP, Conv1d
 
 class FinePointMatching(nn.Module):
     def __init__(self, cfg, return_feat=False):

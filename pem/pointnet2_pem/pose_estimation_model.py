@@ -1,10 +1,10 @@
 import torch
 import torch.nn as nn
-from feature_extraction import ViTEncoder
-from coarse_point_matching import CoarsePointMatching
-from fine_point_matching import FinePointMatching
-from transformer import GeometricStructureEmbedding
-from utils.model_utils import sample_pts_feats
+from .feature_extraction import ViTEncoder
+from .coarse_point_matching import CoarsePointMatching
+from .fine_point_matching import FinePointMatching
+from .transformer import GeometricStructureEmbedding
+from .utils.model_utils import sample_pts_feats
 
 class PEMNet(nn.Module):
     def __init__(self, cfg):

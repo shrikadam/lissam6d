@@ -14,7 +14,7 @@ from __future__ import (
 import torch
 from torch.autograd import Function
 import torch.nn as nn
-import pytorch_utils as pt_utils
+# import pytorch_utils as pt_utils
 import sys
 
 try:
@@ -23,7 +23,7 @@ except:
     import __builtin__ as builtins
 
 try:
-    import pointnet2._ext as _ext
+    from .pointnet2 import _ext
 except ImportError:
     if not getattr(builtins, "__POINTNET2_SETUP__", False):
         raise ImportError(
@@ -32,20 +32,20 @@ except ImportError:
             "https://github.com/erikwijmans/Pointnet2_PyTorch/blob/master/README.rst"
         )
 
-if False:
-    # Workaround for type hints without depending on the `typing` module
-    from typing import *
+# if False:
+#     # Workaround for type hints without depending on the `typing` module
+#     from typing import *
 
 
-class RandomDropout(nn.Module):
-    def __init__(self, p=0.5, inplace=False):
-        super(RandomDropout, self).__init__()
-        self.p = p
-        self.inplace = inplace
+# class RandomDropout(nn.Module):
+#     def __init__(self, p=0.5, inplace=False):
+#         super(RandomDropout, self).__init__()
+#         self.p = p
+#         self.inplace = inplace
 
-    def forward(self, X):
-        theta = torch.Tensor(1).uniform_(0, self.p)[0]
-        return pt_utils.feature_dropout_no_scaling(X, theta, self.train, self.inplace)
+#     def forward(self, X):
+#         theta = torch.Tensor(1).uniform_(0, self.p)[0]
+#         return pt_utils.feature_dropout_no_scaling(X, theta, self.train, self.inplace)
 
 
 class FurthestPointSampling(Function):
