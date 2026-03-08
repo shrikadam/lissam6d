@@ -18,7 +18,7 @@ from sam2.build_sam import build_sam2_video_predictor
 from sam2.automatic_mask_generator import SAM2AutomaticMaskGenerator
 
 from pointnet2_pem.pose_estimation_model import PEMNet
-from pointnet2_pem.utils.data_utils import get_point_cloud_from_depth, get_resize_rgb_choose
+from pointnet2_pem.utils.data_utils import load_im,get_bbox, get_point_cloud_from_depth, get_resize_rgb_choose
 
 
 def clear_cuda_memory():
@@ -28,6 +28,96 @@ def clear_cuda_memory():
         torch.cuda.empty_cache()
         torch.cuda.ipc_collect()
 
+def _get_template(path, cfg, tem_index=1):
+    rgb_path = os.path.join(path, 'rgb_'+str(tem_index)+'.png')
+    mask_path = os.path.join(path, 'mask_'+str(tem_index)+'.png')
+    xyz_path = os.path.join(path, 'xyz_'+str(tem_index)+'.npy')
+
+    rgb = load_im(rgb_path).astype(np.uint8)
+    xyz = np.load(xyz_path).astype(np.float32) / 1000.0  
+    mask = load_im(mask_path).astype(np.uint8) == 255
+
+    bbox = get_bbox(mask)
+    y1, y2, x1, x2 = bbox
+    mask = mask[y1:y2, x1:x2]
+
+    rgb = rgb[:,:,::-1][y1:y2, x1:x2, :]
+    if cfg.rgb_mask_flag:
+        rgb = rgb * (mask[:,:,None]>0).astype(np.uint8)
+
+    rgb = cv2.resize(rgb, (cfg.img_size, cfg.img_size), interpolation=cv2.INTER_LINEAR)
+    rgb_transform = transforms.Compose([transforms.ToTensor(),
+                                transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                                                    std=[0.229, 0.224, 0.225])])
+    rgb = rgb_transform(np.array(rgb))
+
+    choose = (mask>0).astype(np.float32).flatten().nonzero()[0]
+    if len(choose) <= cfg.n_sample_template_point:
+        choose_idx = np.random.choice(np.arange(len(choose)), cfg.n_sample_template_point)
+    else:
+        choose_idx = np.random.choice(np.arange(len(choose)), cfg.n_sample_template_point, replace=False)
+    choose = choose[choose_idx]
+    xyz = xyz[y1:y2, x1:x2, :].reshape((-1, 3))[choose, :]
+
+    rgb_choose = get_resize_rgb_choose(choose, [y1, y2, x1, x2], cfg.img_size)
+    return rgb, rgb_choose, xyz
+
+def get_templates(path, cfg):
+    n_template_view = cfg.n_template_view
+    all_tem = []
+    all_tem_choose = []
+    all_tem_pts = []
+
+    total_nView = 42
+    for v in range(n_template_view):
+        i = int(total_nView / n_template_view * v)
+        tem, tem_choose, tem_pts = _get_template(path, cfg, i)
+        all_tem.append(torch.FloatTensor(tem).unsqueeze(0).cuda())
+        all_tem_choose.append(torch.IntTensor(tem_choose).long().unsqueeze(0).cuda())
+        all_tem_pts.append(torch.FloatTensor(tem_pts).unsqueeze(0).cuda())
+    return all_tem, all_tem_pts, all_tem_choose
+
+def draw_6d_pose(frame, K, R, t, bbox_3d):
+    """
+    Projects a 3D bounding box and coordinate axes onto the 2D frame.
+    Ensure 't' and 'bbox_3d' are both in the same units (meters).
+    """
+    # OpenCV requires the rotation matrix to be a Rodrigues vector
+    rvec, _ = cv2.Rodrigues(R)
+    
+    # We assume no lens distortion for the standard projection (or pass your actual dist coeffs)
+    dist_coeffs = np.zeros((4, 1)) 
+    
+    # 1. Project the 8 bounding box corners
+    pts_2d, _ = cv2.projectPoints(bbox_3d, rvec, t, K, dist_coeffs)
+    pts_2d = np.int32(pts_2d).reshape(-1, 2)
+    
+    # Edges mapping for a 3D box
+    edges = [
+        (0, 1), (0, 2), (0, 4), (1, 3), (1, 5), (2, 3),
+        (2, 6), (3, 7), (4, 5), (4, 6), (5, 7), (6, 7)
+    ]
+    
+    # Draw the bounding box in green
+    for edge in edges:
+        pt1 = tuple(pts_2d[edge[0]])
+        pt2 = tuple(pts_2d[edge[1]])
+        cv2.line(frame, pt1, pt2, (0, 255, 0), 2)
+        
+    # 2. Project Coordinate Axes (X=Red, Y=Green, Z=Blue)
+    # Define axis length (e.g., 5cm = 0.05 meters)
+    axis_length = 0.05 
+    axes_3d = np.float32([[0,0,0], [axis_length,0,0], [0,axis_length,0], [0,0,axis_length]])
+    axes_2d, _ = cv2.projectPoints(axes_3d, rvec, t, K, dist_coeffs)
+    axes_2d = np.int32(axes_2d).reshape(-1, 2)
+    
+    origin = tuple(axes_2d[0])
+    cv2.line(frame, origin, tuple(axes_2d[1]), (0, 0, 255), 3) # X (Red)
+    cv2.line(frame, origin, tuple(axes_2d[2]), (0, 255, 0), 3) # Y (Green)
+    cv2.line(frame, origin, tuple(axes_2d[3]), (255, 0, 0), 3) # Z (Blue)
+    
+    return frame
+
 class PEMNetWrapper:
     def __init__(self, config_path, checkpoint_path, cad_path, device="cuda"):
         self.device = device
@@ -35,10 +125,47 @@ class PEMNetWrapper:
         
         # 1. Initialize the Pose Estimation Model
         print("Initializing PointNet++ Pose Estimation Model...")
-        self.model = PEMNet(self.cfg.model).to(self.device)
-        self.model.eval()
+        ##############################################
+        # self.model = PEMNet(self.cfg.model).to(self.device)
+        # self.model.eval()
         
-        gorilla.solver.load_checkpoint(model=self.model, filename=checkpoint_path)
+        # gorilla.solver.load_checkpoint(model=self.model, filename=checkpoint_path)
+        ##############################################
+        self.model = PEMNet(self.cfg.model)
+        # 1. Load weights explicitly to the CPU to prevent the double-allocation spike
+        print("Loading checkpoint to CPU memory...")
+        checkpoint = torch.load(checkpoint_path, map_location='cpu')
+        
+        # Gorilla saves weights inside a 'model' key usually. 
+        # (Check if it's 'model', 'state_dict', or just the raw weights)
+        if 'model' in checkpoint:
+            state_dict = checkpoint['model']
+        elif 'state_dict' in checkpoint:
+            state_dict = checkpoint['state_dict']
+        else:
+            state_dict = checkpoint
+            
+        # 2. Load the state dictionary into the model
+        self.model.load_state_dict(state_dict, strict=False)
+        
+        print("Casting model to FP16 on CPU...")
+        # 1. Convert to FP16 while still safely on the CPU RAM/Swap
+        self.model = self.model.half() 
+        
+        # 2. DESTROY the FP32 dictionaries to free up gigabytes of RAM
+        del state_dict
+        del checkpoint
+        
+        import gc
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            
+        print("Moving FP16 model to GPU...")
+        # 3. Now, gently slide the halved model into VRAM
+        self.model = self.model.to(self.device)
+        self.model.eval()
+        ##############################################
         
         # 2. Standard Transforms
         self.rgb_transform = transforms.Compose([
@@ -51,6 +178,22 @@ class PEMNetWrapper:
         mesh = trimesh.load_mesh(cad_path)
         self.model_points = mesh.sample(self.cfg.test_dataset.n_sample_model_point).astype(np.float32) / 1000.0
         self.model_radius = np.max(np.linalg.norm(self.model_points, axis=1))
+
+        # Get 3D Bounding Box Corners for Visualization
+        # trimesh.bounds returns [[min_x, min_y, min_z], [max_x, max_y, max_z]]
+        min_bounds, max_bounds = mesh.bounds / 1000.0 # Convert to meters!
+        
+        # Define the 8 corners of the 3D box
+        self.bbox_3d = np.array([
+            [min_bounds[0], min_bounds[1], min_bounds[2]],
+            [min_bounds[0], min_bounds[1], max_bounds[2]],
+            [min_bounds[0], max_bounds[1], min_bounds[2]],
+            [min_bounds[0], max_bounds[1], max_bounds[2]],
+            [max_bounds[0], min_bounds[1], min_bounds[2]],
+            [max_bounds[0], min_bounds[1], max_bounds[2]],
+            [max_bounds[0], max_bounds[1], min_bounds[2]],
+            [max_bounds[0], max_bounds[1], max_bounds[2]],
+        ], dtype=np.float32)
         
         # Cached Templates
         self.cached_tem_pts = None
@@ -59,11 +202,13 @@ class PEMNetWrapper:
     @torch.inference_mode()
     def load_templates(self, template_dir):
         """Loads and extracts PointNet/Image features from templates exactly ONCE."""
-        from run_inference_pem import get_templates # Reuse their exact template loader
         print(f"Extracting dense features from templates in {template_dir}...")
         
         all_tem, all_tem_pts, all_tem_choose = get_templates(template_dir, self.cfg.test_dataset)
         
+        all_tem = [t.half() for t in all_tem]
+        all_tem_pts = [t.half() for t in all_tem_pts]
+
         # Extract features and keep them on the GPU
         self.cached_tem_pts, self.cached_tem_feat = self.model.feature_extraction.get_obj_feats(
             all_tem, all_tem_pts, all_tem_choose
@@ -117,20 +262,44 @@ class PEMNetWrapper:
         rgb_choose = get_resize_rgb_choose(choose, [y1, y2, x1, x2], self.cfg.test_dataset.img_size)
         rgb_choose_tensor = torch.IntTensor(rgb_choose).long().unsqueeze(0).to(self.device)
         
-        pts_tensor = torch.FloatTensor(cloud).unsqueeze(0).to(self.device)
-        score_tensor = torch.FloatTensor([1.0]).to(self.device) # Dummy score for live track
+        ##############################################
+        # pts_tensor = torch.FloatTensor(cloud).unsqueeze(0).to(self.device)
+        # score_tensor = torch.FloatTensor([1.0]).to(self.device) # Dummy score for live track
         
-        # 4. Construct Input Dictionary
+        # # 4. Construct Input Dictionary
+        # input_data = {
+        #     'pts': pts_tensor,
+        #     'rgb': rgb_tensor,
+        #     'rgb_choose': rgb_choose_tensor,
+        #     'score': score_tensor,
+        #     'model': torch.FloatTensor(self.model_points).unsqueeze(0).to(self.device),
+        #     'K': torch.FloatTensor(K_matrix).unsqueeze(0).to(self.device),
+        #     'dense_po': self.cached_tem_pts.clone(),
+        #     'dense_fo': self.cached_tem_feat.clone()
+        # }
+        #################################################
+        pts_tensor = torch.FloatTensor(cloud).unsqueeze(0).to(self.device).half()  # <--- ADD .half()
+        score_tensor = torch.FloatTensor([1.0]).to(self.device).half()             # <--- ADD .half()
+        
+        # Image tensor
+        rgb_tensor = self.rgb_transform(rgb_resized).unsqueeze(0).to(self.device).half() # <--- ADD .half()
+        
+        # K and Model points
+        model_tensor = torch.FloatTensor(self.model_points).unsqueeze(0).to(self.device).half() # <--- ADD .half()
+        K_tensor = torch.FloatTensor(K_matrix).unsqueeze(0).to(self.device).half()              # <--- ADD .half()
+        
         input_data = {
             'pts': pts_tensor,
             'rgb': rgb_tensor,
-            'rgb_choose': rgb_choose_tensor,
+            'rgb_choose': rgb_choose_tensor, # Leave as .long(), it's an index array
             'score': score_tensor,
-            'model': torch.FloatTensor(self.model_points).unsqueeze(0).to(self.device),
-            'K': torch.FloatTensor(K_matrix).unsqueeze(0).to(self.device),
-            'dense_po': self.cached_tem_pts.clone(),
-            'dense_fo': self.cached_tem_feat.clone()
+            'model': model_tensor,
+            'K': K_tensor,
+            # Ensure your cached templates are also half() when you load them!
+            'dense_po': self.cached_tem_pts.half().clone(),
+            'dense_fo': self.cached_tem_feat.half().clone()
         }
+        #################################################
         
         # 5. Forward Pass
         out = self.model(input_data)
@@ -553,10 +722,11 @@ if __name__ == "__main__":
     # We use SAM 2 Tiny for maximum FPS on the Jetson
     sam2_checkpoint = "../checkpoints/sam2.1_hiera_tiny.pt"
     sam2_config = "configs/sam2.1/sam2.1_hiera_t.yaml"
-    
+    print("Initializing DinoV2 Image Descriptor...")
     img_descriptor = DINOv2DescriptorWrapper(device=DEVICE)
     img_descriptor.model = img_descriptor.model.to(torch.bfloat16)
     # Build the SAM 2 Video Predictor for the Tracking phase
+    print("Initializing SAM2 Video Predictor...")
     seg_tracker = build_sam2_video_predictor(sam2_config, sam2_checkpoint, device=DEVICE).to(torch.bfloat16)
     # The AMG will ignore the video memory modules and just use the base image methods.
     seg_generator = SAM2AutomaticMaskGenerator(
@@ -599,22 +769,25 @@ if __name__ == "__main__":
     # frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     # frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     # # If reading from a video file, use: fps_out = cap.get(cv2.CAP_PROP_FPS)
-    # fps_out = 30
-    # fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    # out_video = cv2.VideoWriter('tracking_output.mp4', fourcc, fps_out, (frame_width, frame_height))
-
     # if not cap.isOpened():
     #     raise RuntimeError(f"Failed to open video source: {source}")
-
+    
     ######################## Set up Realsense Camera ########################
+    frame_width = 640
+    frame_height = 480
     pipe = rs.pipeline()
     cfg = rs.config()
     aligner = rs.align(rs.stream.color)
 
-    cfg.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
-    cfg.enable_stream(rs.stream.depth, 640, 480, rs.format.z16, 30)
+    cfg.enable_stream(rs.stream.color, frame_width, frame_height, rs.format.bgr8, 30)
+    cfg.enable_stream(rs.stream.depth, frame_width, frame_height, rs.format.z16, 30)
 
     pipe.start(cfg)
+
+    ######################## Set up Output videofile ########################
+    fps_out = 30
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    out_video = cv2.VideoWriter('tracking_output.mp4', fourcc, fps_out, (frame_width, frame_height))
 
     clear_cuda_memory()
     print("Starting Real-Time Tracking Loop. Press 'ESC' to exit.")

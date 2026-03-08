@@ -68,7 +68,7 @@ class FurthestPointSampling(Function):
         torch.Tensor
             (B, npoint) tensor containing the set
         """
-        fps_inds = _ext.furthest_point_sampling(xyz, npoint)
+        fps_inds = _ext.furthest_point_sampling(xyz.float(), npoint)
         ctx.mark_non_differentiable(fps_inds)
         return fps_inds
 
@@ -104,7 +104,9 @@ class GatherOperation(Function):
 
         ctx.for_backwards = (idx, C, N)
 
-        return _ext.gather_points(features, idx)
+        out = _ext.gather_points(features.float(), idx)
+
+        return out.type_as(features)
 
     @staticmethod
     def backward(ctx, grad_out):
@@ -137,9 +139,9 @@ class ThreeNN(Function):
         idx : torch.Tensor
             (B, n, 3) index of 3 nearest neighbors
         """
-        dist2, idx = _ext.three_nn(unknown, known)
+        dist2, idx = _ext.three_nn(unknown.float(), known.float())
 
-        return torch.sqrt(dist2), idx
+        return torch.sqrt(dist2.type_as(unknown)), idx
 
     @staticmethod
     def backward(ctx, a=None, b=None):
@@ -174,7 +176,8 @@ class ThreeInterpolate(Function):
 
         ctx.three_interpolate_for_backward = (idx, weight, m)
 
-        return _ext.three_interpolate(features, idx, weight)
+        out = _ext.three_interpolate(features.float(), idx, weight.float())
+        return out.type_as(features)
 
     @staticmethod
     def backward(ctx, grad_out):
@@ -229,7 +232,8 @@ class GroupingOperation(Function):
 
         ctx.for_backwards = (idx, N)
 
-        return _ext.group_points(features, idx)
+        out = _ext.group_points(features.float(), idx)
+        return out.type_as(features)
 
     @staticmethod
     def backward(ctx, grad_out):
@@ -279,9 +283,9 @@ class BallQuery(Function):
         torch.Tensor
             (B, npoint, nsample) tensor with the indicies of the features that form the query balls
         """
-        inds = _ext.ball_query(new_xyz, xyz, radius, nsample)
-        ctx.mark_non_differentiable(inds)
-        return inds
+        idx = _ext.ball_query(new_xyz.float(), xyz.float(), radius, nsample)
+        ctx.mark_non_differentiable(idx)
+        return idx
 
     @staticmethod
     def backward(ctx, a=None):

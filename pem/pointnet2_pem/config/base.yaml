@@ -80,11 +80,11 @@ test_dataset:
   img_size: 224
   n_sample_observed_point: 2048
   n_sample_model_point: 1024
-  n_sample_template_point: 5000
+  n_sample_template_point: 2048
   minimum_n_point: 8
   rgb_mask_flag: True
   seg_filter_score: 0.25
-  n_template_view: 42
+  n_template_view: 21
 
 test_dataloader:
   bs            : 16
