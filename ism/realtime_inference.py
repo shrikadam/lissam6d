@@ -7,6 +7,7 @@ import time
 import torch
 import numpy as np
 import argparse
+import pyrealsense2 as rs
 
 # SAM 2 Native Imports
 from sam2.build_sam import build_sam2_video_predictor
@@ -459,19 +460,32 @@ if __name__ == "__main__":
     # ==========================================
     # 3. Real-Time Inference Loop
     # ==========================================
-    # Handle webcam (int) or video file (str)
-    source = int(args.video_source) if args.video_source.isdigit() else args.video_source
-    cap = cv2.VideoCapture(source)
-    # Grab the width and height from the camera stream
-    frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    # If reading from a video file, use: fps_out = cap.get(cv2.CAP_PROP_FPS)
+    ######################## Video Playback ########################
+    # source = int(args.video_source) if args.video_source.isdigit() else args.video_source
+    # cap = cv2.VideoCapture(source)
+    # # Grab the width and height from the camera stream
+    # frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    # frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    # # If reading from a video file, use: fps_out = cap.get(cv2.CAP_PROP_FPS)
+    # if not cap.isOpened():
+    #     raise RuntimeError(f"Failed to open video source: {source}")
+    
+    ######################## Set up Realsense Camera ########################
+    frame_width = 640
+    frame_height = 480
+    pipe = rs.pipeline()
+    cfg = rs.config()
+    aligner = rs.align(rs.stream.color)
+
+    cfg.enable_stream(rs.stream.color, frame_width, frame_height, rs.format.bgr8, 30)
+    cfg.enable_stream(rs.stream.depth, frame_width, frame_height, rs.format.z16, 30)
+
+    pipe.start(cfg)
+
+    ######################## Set up Output videofile ########################
     fps_out = 30
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     out_video = cv2.VideoWriter('tracking_output.mp4', fourcc, fps_out, (frame_width, frame_height))
-
-    if not cap.isOpened():
-        raise RuntimeError(f"Failed to open video source: {source}")
 
     clear_cuda_memory()
     print("Starting Real-Time Tracking Loop. Press 'ESC' to exit.")
@@ -479,12 +493,22 @@ if __name__ == "__main__":
     num_frames = 0
     try:
         while True:
-            ret, frame = cap.read()
-            if not ret: 
-                print("End of stream.")
-                break
+            ######## Capture from video ########
+            # ret, frame = cap.read()
+            # if not ret: 
+            #     print("End of stream.")
+            #     break
+            ####################################
 
-            mask, state, fps = pipeline.process_frame(frame)
+            ######## Capture from Realsense ########
+            frame_ = pipe.wait_for_frames()
+            frame = aligner.process(frame_)
+            color_frame = frame.get_color_frame()
+            depth_frame = frame.get_depth_frame()
+            color_image = np.asanyarray(color_frame.get_data())
+            depth_image = np.asanyarray(depth_frame.get_data())
+
+            mask, state, fps = pipeline.process_frame(color_image)
             num_frames += 1
             # Vis
             if mask is not None:
@@ -496,12 +520,15 @@ if __name__ == "__main__":
                 bool_mask = mask > 0 
                 
                 # Apply the blue overlay
-                frame[bool_mask] = frame[bool_mask] * 0.5 + np.array([255, 0, 0], dtype=np.uint8) * 0.5
+                color_image[bool_mask] = color_image[bool_mask] * 0.5 + np.array([255, 0, 0], dtype=np.uint8) * 0.5
                 
-            cv2.putText(frame, f"State: {state} | FPS: {fps:.1f}", (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,0), 2)
+            cv2.putText(color_image, f"State: {state} | FPS: {fps:.1f}", (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,0), 2)
             
             # Write the frame to the video file instead of showing it
-            out_video.write(frame)
+            out_video.write(color_image)
+            # cv2.imshow("Realtime Tracking", color_image)
+            # if cv2.waitKey(1) == ord('q'):
+            #     break
             
             # Print to terminal so you know it hasn't frozen
             print(f"Processing Frame {num_frames} | State: {state} | FPS: {fps:.1f}", end='\r')
@@ -509,6 +536,8 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print("\nManually stopped recording via Ctrl+C.")
 
-    cap.release()
+    # cap.release()
+    pipe.stop()
     out_video.release() # CRITICAL: This finalizes and saves the mp4 file
     print("Video saved successfully to tracking_output.mp4")
+    cv2.destroyAllWindows()

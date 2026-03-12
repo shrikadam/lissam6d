@@ -80,16 +80,17 @@ def get_templates(path, cfg):
 def draw_6d_pose(frame, K, R, t, bbox_3d):
     """
     Projects a 3D bounding box and coordinate axes onto the 2D frame.
-    Ensure 't' and 'bbox_3d' are both in the same units (meters).
+    Automatically handles the millimeter scaling to prevent microscopic drawing.
     """
     # OpenCV requires the rotation matrix to be a Rodrigues vector
     rvec, _ = cv2.Rodrigues(R)
-    
-    # We assume no lens distortion for the standard projection (or pass your actual dist coeffs)
     dist_coeffs = np.zeros((4, 1)) 
     
-    # 1. Project the 8 bounding box corners
-    pts_2d, _ = cv2.projectPoints(bbox_3d, rvec, t, K, dist_coeffs)
+    # 1. Scale the bounding box from meters back up to millimeters to match 't'
+    bbox_3d_mm = bbox_3d * 1000.0
+    
+    # Project the 8 bounding box corners
+    pts_2d, _ = cv2.projectPoints(bbox_3d_mm, rvec, t, K, dist_coeffs)
     pts_2d = np.int32(pts_2d).reshape(-1, 2)
     
     # Edges mapping for a 3D box
@@ -98,20 +99,26 @@ def draw_6d_pose(frame, K, R, t, bbox_3d):
         (2, 6), (3, 7), (4, 5), (4, 6), (5, 7), (6, 7)
     ]
     
-    # Draw the bounding box in green
+    # Draw the bounding box (using a highly visible green, 2px thick)
     for edge in edges:
         pt1 = tuple(pts_2d[edge[0]])
         pt2 = tuple(pts_2d[edge[1]])
         cv2.line(frame, pt1, pt2, (0, 255, 0), 2)
         
     # 2. Project Coordinate Axes (X=Red, Y=Green, Z=Blue)
-    # Define axis length (e.g., 5cm = 0.05 meters)
-    axis_length = 0.05 
-    axes_3d = np.float32([[0,0,0], [axis_length,0,0], [0,axis_length,0], [0,0,axis_length]])
+    axis_length_mm = 50.0 # 50mm = 5cm axis lines
+    axes_3d = np.float32([
+        [0, 0, 0], 
+        [axis_length_mm, 0, 0], 
+        [0, axis_length_mm, 0], 
+        [0, 0, axis_length_mm]
+    ])
+    
     axes_2d, _ = cv2.projectPoints(axes_3d, rvec, t, K, dist_coeffs)
     axes_2d = np.int32(axes_2d).reshape(-1, 2)
-    
     origin = tuple(axes_2d[0])
+    
+    # Draw axes (3px thick so they pop on camera)
     cv2.line(frame, origin, tuple(axes_2d[1]), (0, 0, 255), 3) # X (Red)
     cv2.line(frame, origin, tuple(axes_2d[2]), (0, 255, 0), 3) # Y (Green)
     cv2.line(frame, origin, tuple(axes_2d[3]), (255, 0, 0), 3) # Z (Blue)
@@ -206,8 +213,11 @@ class PEMNetWrapper:
         
         all_tem, all_tem_pts, all_tem_choose = get_templates(template_dir, self.cfg.test_dataset)
         
+        ##############################################
+        # Cast template data to float
         all_tem = [t.half() for t in all_tem]
         all_tem_pts = [t.half() for t in all_tem_pts]
+        ##############################################
 
         # Extract features and keep them on the GPU
         self.cached_tem_pts, self.cached_tem_feat = self.model.feature_extraction.get_obj_feats(
@@ -221,25 +231,39 @@ class PEMNetWrapper:
         The Real-Time Handoff. 
         Takes the raw numpy arrays from the camera and SAM 2, and outputs the 6D Pose.
         """
-        # 1. Crop using the SAM 2 tracking mask
+        # 1. Check Mask Size
         y_idx, x_idx = np.where(mask > 0)
-        if len(y_idx) < 32: return None, None # Mask is too small, track lost
+        # print(f"\n[PEM DEBUG] SAM2 Mask Pixels: {len(y_idx)}")
+        if len(y_idx) < 32: 
+            # print("[PEM DEBUG] ABORT: Mask too small.")
+            return None, None 
         
-        y1, y2 = np.min(y_idx), np.max(y_idx)
-        x1, x2 = np.min(x_idx), np.max(x_idx)
+        y1, y2 = np.min(y_idx), np.max(y_idx) + 1
+        x1, x2 = np.min(x_idx), np.max(x_idx) + 1
+        mask_cropped = mask[y1:y2, x1:x2]
+        choose = mask_cropped.astype(np.float32).flatten().nonzero()[0]
         
         # 2. Process Point Cloud
+        # CHECK: Make sure depth_frame is being passed in METERS, not MILLIMETERS!
         whole_pts = get_point_cloud_from_depth(depth_frame, K_matrix)
-        choose = mask.astype(np.float32).flatten().nonzero()[0]
-        
         cloud = whole_pts[y1:y2, x1:x2, :].reshape(-1, 3)[choose, :]
+        
         center = np.mean(cloud, axis=0)
         tmp_cloud = cloud - center[None, :]
         
-        # Filter outliers outside the CAD model radius
-        valid_flag = np.linalg.norm(tmp_cloud, axis=1) < self.model_radius * 1.2
-        if np.sum(valid_flag) < 4: return None, None
+        # 3. The Radius Check (Where it is likely failing)
+        norms = np.linalg.norm(tmp_cloud, axis=1)
+        # print(f"[PEM DEBUG] CAD Model Radius: {self.model_radius:.4f} meters")
+        # print(f"[PEM DEBUG] Point Cloud - Min dist from center: {np.min(norms):.4f}m | Max dist: {np.max(norms):.4f}m")
         
+        valid_flag = norms < self.model_radius * 1.2
+        valid_count = np.sum(valid_flag)
+        # print(f"[PEM DEBUG] Points surviving radius filter: {valid_count} / {len(choose)}")
+        
+        if valid_count < 4: 
+            # print("[PEM DEBUG] ABORT: Points filtered out. Depth scale is likely wrong!")
+            return None, None
+            
         choose = choose[valid_flag]
         cloud = cloud[valid_flag]
         
@@ -254,7 +278,8 @@ class PEMNetWrapper:
         # 3. Process RGB
         rgb_crop = rgb_frame[y1:y2, x1:x2, :]
         if self.cfg.test_dataset.rgb_mask_flag:
-            rgb_crop = rgb_crop * (mask[y1:y2, x1:x2, None] > 0).astype(np.uint8)
+            # Apply the cropped mask to the cropped RGB
+            rgb_crop = rgb_crop * (mask_cropped[:,:,None] > 0).astype(np.uint8)
             
         rgb_resized = cv2.resize(rgb_crop, (self.cfg.test_dataset.img_size, self.cfg.test_dataset.img_size))
         rgb_tensor = self.rgb_transform(rgb_resized).unsqueeze(0).to(self.device)
@@ -753,11 +778,11 @@ if __name__ == "__main__":
     # ==========================================
     pipeline.load_templates(args.template_dir)
 
-    with open(args.cam_info, "r") as f:
-        cam_info = json.load(f)
-    cam = cam_info[next(iter(cam_info))]
-    K_matrix = np.array(cam['cam_K']).reshape((3, 3))
-    depth_scale = np.array(cam['depth_scale'])
+    # with open(args.cam_info, "r") as f:
+    #     cam_info = json.load(f)
+    # cam = cam_info[next(iter(cam_info))]
+    # K_matrix = np.array(cam['cam_K']).reshape((3, 3))
+    # depth_scale = np.array(cam['depth_scale'])
 
     # ==========================================
     # 3. Real-Time Inference Loop
@@ -784,8 +809,26 @@ if __name__ == "__main__":
 
     pipe.start(cfg)
 
+    profile = pipe.get_active_profile()
+
+    # Get True Depth Scale directly from the sensor laser
+    depth_sensor = profile.get_device().first_depth_sensor()
+    true_depth_scale = depth_sensor.get_depth_scale() # This is natively in meters (usually 0.001)
+
+    # Get True Intrinsic Matrix
+    depth_profile = rs.video_stream_profile(profile.get_stream(rs.stream.depth))
+    intrinsics = depth_profile.get_intrinsics()
+    K_matrix = np.array([
+        [intrinsics.fx, 0, intrinsics.ppx],
+        [0, intrinsics.fy, intrinsics.ppy],
+        [0, 0, 1]
+    ], dtype=np.float32)
+
+    print(f"True Depth Scale: {true_depth_scale}")
+    print(f"True K Matrix:\n{K_matrix}")
+
     ######################## Set up Output videofile ########################
-    fps_out = 30
+    fps_out = 18
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     out_video = cv2.VideoWriter('tracking_output.mp4', fourcc, fps_out, (frame_width, frame_height))
 
@@ -808,21 +851,9 @@ if __name__ == "__main__":
             color_frame = frame.get_color_frame()
             depth_frame = frame.get_depth_frame()
             color_image = np.asanyarray(color_frame.get_data())
-            depth_image = np.asanyarray(depth_frame.get_data())
+            depth_image = np.asanyarray(depth_frame.get_data()) * true_depth_scale
 
             mask, state, fps = pipeline.process_frame(color_image)
-
-            # Visualize mask
-            # if mask is not None:
-            #     # Bulletproof check: if it's a tensor, move it to CPU and make it numpy
-            #     if torch.is_tensor(mask):
-            #         mask = mask.cpu().numpy()
-                
-            #     # Ensure it's boolean
-            #     bool_mask = mask > 0 
-                
-            #     # Apply the blue overlay
-            #     color_image[bool_mask] = color_image[bool_mask] * 0.5 + np.array([255, 0, 0], dtype=np.uint8) * 0.5
 
             if mask is not None and state == "TRACKING":
                 # Pass the mask directly to the PEM in memory
@@ -830,8 +861,14 @@ if __name__ == "__main__":
                     R, t = pem_tracker.estimate_pose(color_image, depth_image, mask, K_matrix)
                     if R is not None:
                         print(f"Pose - Trans: {t.flatten()} | Rot: {R[0]}")
-                        frame_bgr = draw_6d_pose(
-                            frame=frame_bgr, 
+                        if torch.is_tensor(mask):
+                            mask = mask.cpu().numpy()
+                        bool_mask = mask > 0 
+                        # Apply the blue overlay
+                        color_image[bool_mask] = color_image[bool_mask] * 0.5 + np.array([255, 0, 0], dtype=np.uint8) * 0.5
+                        # Draw Pose
+                        color_image = draw_6d_pose(
+                            frame=color_image, 
                             K=K_matrix, 
                             R=R, 
                             t=t, # Ensure this is in meters
@@ -846,6 +883,9 @@ if __name__ == "__main__":
             
             # Write the frame to the video file instead of showing it
             out_video.write(color_image)
+            # cv2.imshow("Pose Tracking Realtime", color_image)
+            # if cv2.waitKey(1) == ord('q'):
+            #     break
             
             # Print to terminal so you know it hasn't frozen
             print(f"Processing Frame {num_frames} | State: {state} | FPS: {fps:.1f}", end='\r')
@@ -853,6 +893,7 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print("\nManually stopped recording via Ctrl+C.")
 
-    cap.release()
+    # cap.release()
+    pipe.stop()
     out_video.release() # CRITICAL: This finalizes and saves the mp4 file
-    print("Video saved successfully to tracking_output.mp4")
+    cv2.destroyAllWindows()

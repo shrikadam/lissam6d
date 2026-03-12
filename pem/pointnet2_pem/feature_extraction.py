@@ -72,11 +72,11 @@ class ViT_AE(nn.Module):
             assert False
 
         if self.pretrained:
-            vit_checkpoint = os.path.join('checkpoints', 'mae_pretrain_'+ self.vit_type +'.pth')
+            vit_checkpoint = os.path.join('../checkpoints', 'mae_pretrain_'+ self.vit_type +'.pth')
             if not os.path.isdir(vit_checkpoint):
-                if not os.path.isdir('checkpoints'):
-                    os.makedirs('checkpoints')
-                model_zoo.load_url('https://dl.fbaipublicfiles.com/mae/pretrain/mae_pretrain_'+ self.vit_type +'.pth', 'checkpoints')
+                if not os.path.isdir('../checkpoints'):
+                    os.makedirs('../checkpoints')
+                model_zoo.load_url('https://dl.fbaipublicfiles.com/mae/pretrain/mae_pretrain_'+ self.vit_type +'.pth', '../checkpoints')
 
             checkpoint = torch.load(vit_checkpoint, map_location='cpu')
             print("load pre-trained checkpoint from: %s" % vit_checkpoint)
