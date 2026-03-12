@@ -339,6 +339,7 @@ class RealTimeObjectTracker:
         if self.state == "ACQUISITION":
             mask = self._run_acquisition(frame_rgb)
             if mask is not None:
+                clear_cuda_memory()
                 self.state = "TRACKING"
                 # Pass the first frame and the golden mask to initialize SAM 2's memory bank
                 result_mask = self.seg_tracker.init_stream(frame_rgb, mask)
@@ -417,7 +418,15 @@ class RealTimeObjectTracker:
                 # print(f"DEBUG: Saved winning live crop to 'debug_match_score_{score:.2f}.jpg'")
                 # print(f"DEBUG: This matched against Template Index #{matched_template_idx}")
                 # ------------------------------------------
-                return sam_outputs[winner_idx]['segmentation'] # Return boolean numpy mask
+                winner_mask = sam_outputs[winner_idx]['segmentation'].copy() # Return boolean numpy mask
+
+                del sam_outputs
+                del masks
+                del boxes
+                del image_tensor
+                del query_cls
+
+                return winner_mask
             
         return None
 
@@ -485,7 +494,8 @@ if __name__ == "__main__":
     ######################## Set up Output videofile ########################
     fps_out = 30
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    out_video = cv2.VideoWriter('tracking_output.mp4', fourcc, fps_out, (frame_width, frame_height))
+    video_path = "../results/seg_output.mp4"
+    out_video = cv2.VideoWriter(video_path, fourcc, fps_out, (frame_width, frame_height))
 
     clear_cuda_memory()
     print("Starting Real-Time Tracking Loop. Press 'ESC' to exit.")
@@ -539,5 +549,5 @@ if __name__ == "__main__":
     # cap.release()
     pipe.stop()
     out_video.release() # CRITICAL: This finalizes and saves the mp4 file
-    print("Video saved successfully to tracking_output.mp4")
+    print(f"Video saved successfully to {video_path}")
     cv2.destroyAllWindows()
