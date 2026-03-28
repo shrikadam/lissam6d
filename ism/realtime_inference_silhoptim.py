@@ -293,7 +293,109 @@ class DINOv2DescriptorWrapper:
         
         # Get the best template score for each proposal
         best_scores, best_template_idx = similarity_matrix.max(dim=1)
-        return best_scores, best_template_idx
+        # ---> NEW: Return the full matrix as the third variable
+        return best_scores, best_template_idx, similarity_matrix
+
+# class SilhouetteOptimizer:
+#     def __init__(self, cad_path, K_matrix):
+#         self.K = K_matrix
+        
+#         print(f"Loading CAD Mesh for Optimizer: {cad_path}")
+#         mesh = trimesh.load_mesh(cad_path)
+        
+#         # Scale to meters if CAD is in millimeters
+#         if np.max(mesh.vertices) > 10.0:
+#             mesh.apply_scale(0.001)
+            
+#         # CENTER THE CAD ORIGIN (Crucial for correct Z-depth scaling)
+#         mesh.vertices -= mesh.bounding_box.centroid
+            
+#         min_b, max_b = mesh.bounds
+#         self.bbox_3d = np.array([
+#             [min_b[0], min_b[1], min_b[2]], [max_b[0], min_b[1], min_b[2]],
+#             [min_b[0], max_b[1], min_b[2]], [max_b[0], max_b[1], min_b[2]],
+#             [min_b[0], min_b[1], max_b[2]], [max_b[0], min_b[1], max_b[2]],
+#             [min_b[0], max_b[1], max_b[2]], [max_b[0], max_b[1], max_b[2]]
+#         ], dtype=np.float32)
+
+#         # ==========================================
+#         # ---> THE FIX: WIREFRAME SAMPLING <---
+#         # ==========================================
+#         # Instead of sampling the solid surface, we sample points strictly 
+#         # along the 12 edges of the bounding box to prevent singularity collapse.
+#         edges = [(0, 1), (0, 2), (0, 4), (1, 3), (1, 5), (2, 3), 
+#                  (2, 6), (3, 7), (4, 5), (4, 6), (5, 7), (6, 7)]
+        
+#         edge_points = []
+#         points_per_edge = 20 # 20 points per edge = 240 points total
+        
+#         for edge in edges:
+#             p1 = self.bbox_3d[edge[0]]
+#             p2 = self.bbox_3d[edge[1]]
+#             for i in range(points_per_edge):
+#                 alpha = i / (points_per_edge - 1)
+#                 edge_points.append(p1 * (1.0 - alpha) + p2 * alpha)
+                
+#         self.model_points = np.array(edge_points, dtype=np.float32)
+
+#     def _loss_function(self, tvec, fixed_rvec, dist_transform):
+#         """
+#         Calculates pixel distance error. 
+#         Only tvec (Translation) is being optimized. fixed_rvec is locked.
+#         """
+#         pts_2d, _ = cv2.projectPoints(self.model_points, fixed_rvec, tvec, self.K, np.zeros((4, 1)))
+#         pts_2d = pts_2d.reshape(-1, 2)
+        
+#         # Continuous Bilinear Interpolation for smooth gradients
+#         coords = np.vstack((pts_2d[:, 1], pts_2d[:, 0])) # (y, x) format for map_coordinates
+        
+#         # Evaluate distance. cval=1000.0 heavily penalizes points that fall off the screen.
+#         residuals = map_coordinates(dist_transform, coords, order=1, mode='constant', cval=1000.0)
+            
+#         return residuals
+
+#     def optimize_translation_only(self, mask, fixed_R, init_t, is_first_frame=False):
+#         """
+#         Optimizes only X, Y, Z. 
+#         is_first_frame allows the Z-axis to jump to find the initial scale.
+#         """
+#         mask_uint8 = (mask * 255).astype(np.uint8)
+        
+#         # 1. Generate Distance Transform Gravity Field
+#         edges = cv2.Canny(mask_uint8, 100, 200)
+#         edges_inv = cv2.bitwise_not(edges)
+#         dist_transform = cv2.distanceTransform(edges_inv, cv2.DIST_L2, 3)
+        
+#         # 2. Setup Parameters (Only Translation is passed to SciPy)
+#         fixed_rvec = R_scipy.from_matrix(fixed_R).as_rotvec()
+#         init_t_flat = init_t.flatten()
+        
+#         # 3. Dynamic Bounding
+#         if is_first_frame:
+#             xy_margin = 0.20 # +/- 20 cm
+#             z_margin = 0.30  # +/- 30 cm
+#         else:
+#             xy_margin = 0.05 # +/- 5 cm
+#             z_margin = 0.02  # +/- 2 cm
+            
+#         bounds_lower = [init_t_flat[0] - xy_margin, init_t_flat[1] - xy_margin, init_t_flat[2] - z_margin]
+#         bounds_upper = [init_t_flat[0] + xy_margin, init_t_flat[1] + xy_margin, init_t_flat[2] + z_margin]
+        
+#         # 4. Optimize with HUBER LOSS
+#         # f_scale=5.0 means any pixel error > 5 pixels becomes linear (ignoring the occlusion!)
+#         result = least_squares(
+#             fun=self._loss_function,
+#             x0=init_t_flat, 
+#             args=(fixed_rvec, dist_transform),
+#             bounds=(bounds_lower, bounds_upper), 
+#             method='trf', 
+#             loss='huber', 
+#             f_scale=5.0, 
+#             max_nfev=50 if is_first_frame else 15
+#         )
+        
+#         opt_t = result.x.reshape(3, 1)
+#         return opt_t   
 
 class SilhouetteOptimizer:
     def __init__(self, cad_path, K_matrix):
@@ -306,7 +408,7 @@ class SilhouetteOptimizer:
         if np.max(mesh.vertices) > 10.0:
             mesh.apply_scale(0.001)
             
-        # CENTER THE CAD ORIGIN (Crucial for correct Z-depth scaling)
+        # CENTER THE CAD ORIGIN
         mesh.vertices -= mesh.bounding_box.centroid
             
         min_b, max_b = mesh.bounds
@@ -317,17 +419,12 @@ class SilhouetteOptimizer:
             [min_b[0], max_b[1], max_b[2]], [max_b[0], max_b[1], max_b[2]]
         ], dtype=np.float32)
 
-        # ==========================================
-        # ---> THE FIX: WIREFRAME SAMPLING <---
-        # ==========================================
-        # Instead of sampling the solid surface, we sample points strictly 
-        # along the 12 edges of the bounding box to prevent singularity collapse.
+        # Wireframe Sampling (12 edges)
         edges = [(0, 1), (0, 2), (0, 4), (1, 3), (1, 5), (2, 3), 
                  (2, 6), (3, 7), (4, 5), (4, 6), (5, 7), (6, 7)]
         
         edge_points = []
-        points_per_edge = 20 # 20 points per edge = 240 points total
-        
+        points_per_edge = 20 
         for edge in edges:
             p1 = self.bbox_3d[edge[0]]
             p2 = self.bbox_3d[edge[1]]
@@ -337,65 +434,75 @@ class SilhouetteOptimizer:
                 
         self.model_points = np.array(edge_points, dtype=np.float32)
 
-    def _loss_function(self, tvec, fixed_rvec, dist_transform):
+    def optimize_z_scale_only(self, mask, fixed_R, Z_guess):
         """
-        Calculates pixel distance error. 
-        Only tvec (Translation) is being optimized. fixed_rvec is locked.
-        """
-        pts_2d, _ = cv2.projectPoints(self.model_points, fixed_rvec, tvec, self.K, np.zeros((4, 1)))
-        pts_2d = pts_2d.reshape(-1, 2)
-        
-        # Continuous Bilinear Interpolation for smooth gradients
-        coords = np.vstack((pts_2d[:, 1], pts_2d[:, 0])) # (y, x) format for map_coordinates
-        
-        # Evaluate distance. cval=1000.0 heavily penalizes points that fall off the screen.
-        residuals = map_coordinates(dist_transform, coords, order=1, mode='constant', cval=1000.0)
-            
-        return residuals
-
-    def optimize_translation_only(self, mask, fixed_R, init_t, is_first_frame=False):
-        """
-        Optimizes only X, Y, Z. 
-        is_first_frame allows the Z-axis to jump to find the initial scale.
+        FRAME 0 INITIALIZATION: Locks the X/Y projection to the dead center of the mask. 
+        Forces the optimizer to expand the bounding box (by reducing Z) until it hits the edges.
         """
         mask_uint8 = (mask * 255).astype(np.uint8)
-        
-        # 1. Generate Distance Transform Gravity Field
+        edges = cv2.Canny(mask_uint8, 100, 200)
+        edges_inv = cv2.bitwise_not(edges)
+        dist_transform = cv2.distanceTransform(edges_inv, cv2.DIST_L2, 3)
+
+        fixed_rvec = R_scipy.from_matrix(fixed_R).as_rotvec()
+
+        # Find 2D centroid of the mask
+        ys, xs = np.where(mask > 0)
+        if len(ys) == 0: return np.array([[0],[0],[Z_guess]], dtype=np.float32)
+        u_center, v_center = np.median(xs), np.median(ys)
+
+        fx, fy = self.K[0, 0], self.K[1, 1]
+        cx, cy = self.K[0, 2], self.K[1, 2]
+
+        def _loss_1dof(z_param):
+            Z = z_param[0]
+            # Mathematically force X and Y to project to the 2D centroid
+            X = (u_center - cx) * Z / fx
+            Y = (v_center - cy) * Z / fy
+            tvec = np.array([[X], [Y], [Z]], dtype=np.float32)
+            
+            pts_2d, _ = cv2.projectPoints(self.model_points, fixed_rvec, tvec, self.K, np.zeros((4, 1)))
+            coords = np.vstack((pts_2d.reshape(-1, 2)[:, 1], pts_2d.reshape(-1, 2)[:, 0]))
+            return map_coordinates(dist_transform, coords, order=1, mode='constant', cval=1000.0)
+
+        # Allow Z to search anywhere between 10cm and 2.0m
+        result = least_squares(
+            fun=_loss_1dof, x0=[Z_guess], bounds=([0.1], [2.0]),
+            method='trf', loss='huber', f_scale=5.0
+        )
+
+        # Reconstruct the final 3D vector
+        best_Z = result.x[0]
+        best_X = (u_center - cx) * best_Z / fx
+        best_Y = (v_center - cy) * best_Z / fy
+
+        return np.array([[best_X], [best_Y], [best_Z]], dtype=np.float32)
+
+    def optimize_translation_only(self, mask, fixed_R, init_t):
+        """FRAME 1+ TRACKING: 3-DoF tracking with tight bounds to prevent jitter."""
+        mask_uint8 = (mask * 255).astype(np.uint8)
         edges = cv2.Canny(mask_uint8, 100, 200)
         edges_inv = cv2.bitwise_not(edges)
         dist_transform = cv2.distanceTransform(edges_inv, cv2.DIST_L2, 3)
         
-        # 2. Setup Parameters (Only Translation is passed to SciPy)
         fixed_rvec = R_scipy.from_matrix(fixed_R).as_rotvec()
         init_t_flat = init_t.flatten()
         
-        # 3. Dynamic Bounding
-        if is_first_frame:
-            xy_margin = 0.20 # +/- 20 cm
-            z_margin = 0.30  # +/- 30 cm
-        else:
-            xy_margin = 0.05 # +/- 5 cm
-            z_margin = 0.02  # +/- 2 cm
-            
-        bounds_lower = [init_t_flat[0] - xy_margin, init_t_flat[1] - xy_margin, init_t_flat[2] - z_margin]
-        bounds_upper = [init_t_flat[0] + xy_margin, init_t_flat[1] + xy_margin, init_t_flat[2] + z_margin]
-        
-        # 4. Optimize with HUBER LOSS
-        # f_scale=5.0 means any pixel error > 5 pixels becomes linear (ignoring the occlusion!)
-        result = least_squares(
-            fun=self._loss_function,
-            x0=init_t_flat, 
-            args=(fixed_rvec, dist_transform),
-            bounds=(bounds_lower, bounds_upper), 
-            method='trf', 
-            loss='huber', 
-            f_scale=5.0, 
-            max_nfev=50 if is_first_frame else 15
-        )
-        
-        opt_t = result.x.reshape(3, 1)
-        return opt_t   
+        def _loss_3dof(tvec):
+            pts_2d, _ = cv2.projectPoints(self.model_points, fixed_rvec, tvec, self.K, np.zeros((4, 1)))
+            coords = np.vstack((pts_2d.reshape(-1, 2)[:, 1], pts_2d.reshape(-1, 2)[:, 0]))
+            return map_coordinates(dist_transform, coords, order=1, mode='constant', cval=1000.0)
 
+        # Tight tracking bounds (+/- 5cm in XY, +/- 2cm in Z)
+        bounds_lower = [init_t_flat[0] - 0.05, init_t_flat[1] - 0.05, init_t_flat[2] - 0.02]
+        bounds_upper = [init_t_flat[0] + 0.05, init_t_flat[1] + 0.05, init_t_flat[2] + 0.02]
+        
+        result = least_squares(
+            fun=_loss_3dof, x0=init_t_flat, bounds=(bounds_lower, bounds_upper), 
+            method='trf', loss='huber', f_scale=5.0, max_nfev=15
+        )
+        return result.x.reshape(3, 1)
+    
 class RealTimeObjectTracker:
     def __init__(self, seg_generator, img_descriptor, seg_tracker, device="cuda"):
         self.device = device
@@ -482,7 +589,6 @@ class RealTimeObjectTracker:
             init_t = w2c_4x4[:3, 3:4].astype(np.float32) # Extract the 3x1 translation vector
 
             if init_t[2, 0] > 5.0: 
-                print("Applied m to mm!!!!!!!!!!!!!!!!!!!!!!")
                 init_t /= 1000.0
             
             self.template_poses.append((init_R, init_t)) # Store them as a tuple!
@@ -523,10 +629,13 @@ class RealTimeObjectTracker:
                 
                 if self.optimizer is not None:
                     # ---> THE FIX: Calculate initial XY based on live mask location
-                    self.current_t = get_rgb_centroid(mask, template_t[2, 0], self.optimizer.K)
+                    # self.current_t = get_rgb_centroid(mask, template_t[2, 0], self.optimizer.K)
 
-                    self.current_t = self.optimizer.optimize_translation_only(
-                        mask, self.current_R, self.current_t, is_first_frame=True
+                    # self.current_t = self.optimizer.optimize_translation_only(
+                    #     mask, self.current_R, self.current_t, is_first_frame=True
+                    # )
+                    self.current_t = self.optimizer.optimize_z_scale_only(
+                        mask, self.current_R, template_t[2, 0]
                     )
                 
                 print("Target ACQUIRED. Switching to TRACKING mode.")
@@ -575,39 +684,54 @@ class RealTimeObjectTracker:
             if query_cls is None: return None, None
 
             # 3. Match against Templates
-            best_scores, best_template_idx = self.img_descriptor.compute_semantic_match(query_cls, self.templates_cls)
-            # --- DEBUG: NUMERICAL SCORE SPREAD ---
-            # Sort scores to see the top 5 highest matches
-            sorted_scores, sorted_indices = torch.sort(best_scores, descending=True)
-            top_5_scores = sorted_scores[:5].tolist()
-            print(f"{'#'*30}")
-            print(f"DEBUG: Top 5 Cosine Similarities: {[round(s, 3) for s in top_5_scores]}")
-            print(f"DEBUG: Mean Score: {best_scores.mean().item():.3f} | Min: {best_scores.min().item():.3f}")
-            print(f"{'#'*30}")
-            # -------------------------------------
+            best_scores, best_template_idx, sim_matrix = self.img_descriptor.compute_semantic_match(query_cls, self.templates_cls)
             
             # 4. Find the winner
             winner_idx = torch.argmax(best_scores).item()
             if best_scores[winner_idx] > self.acquisition_threshold:
                 print(f"Target Found! DINOv2 Score: {best_scores[winner_idx]:.2f}")
                 # --- DEBUG: VISUALIZE THE WINNING MATCH ---
+                # ==========================================
+                # ---> NEW: Print scores against ALL templates
+                # ==========================================
+                all_scores = sim_matrix[winner_idx].tolist()
+                print("--- DINOv2 Match Scores vs ALL Templates ---")
+                
+                # Format them as "T0:0.75", "T1:0.62", etc.
+                formatted_scores = [f"T{i}:{s:.2f}" for i, s in enumerate(all_scores)]
+                
+                # Print in neat rows of 10 so it doesn't flood your terminal
+                for i in range(0, len(formatted_scores), 10):
+                    print(" | ".join(formatted_scores[i:i+10]))
+                print("--------------------------------------------")
                 win_mask = sam_outputs[winner_idx]['segmentation']
                 win_bbox = sam_outputs[winner_idx]['bbox'] # [x, y, w, h]
                 x, y, w, h = [int(v) for v in win_bbox]
                 
-                # Crop the live frame
+                # 1. Prepare the Live Crop
                 live_crop = frame_rgb[y:y+h, x:x+w].copy()
                 live_crop[~win_mask[y:y+h, x:x+w]] = 0 # Apply mask
                 live_crop = cv2.resize(live_crop, (224, 224))
+                live_crop_bgr = cv2.cvtColor(live_crop, cv2.COLOR_RGB2BGR)
                 
-                # We matched against self.templates_cls[best_template_idx[winner_idx]]
-                # (Assuming you saved the template images during load_templates)
                 matched_template_idx = best_template_idx[winner_idx].item()
                 score = best_scores[winner_idx].item()
                 
-                cv2.imwrite(f"debug_match_score_{score:.2f}.jpg", cv2.cvtColor(live_crop, cv2.COLOR_RGB2BGR))
+                # 2. Prepare the Matched Template
+                matched_template_bgr = self.template_images[matched_template_idx]
+                matched_template_bgr = cv2.resize(matched_template_bgr, (224, 224)) # Ensure identical dimensions
+                
+                # 3. Add Helpful Text Labels
+                cv2.putText(live_crop_bgr, "Live Mask", (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                cv2.putText(matched_template_bgr, f"Template {matched_template_idx}", (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                
+                # 4. Stitch Side-by-Side and Save
+                debug_concat = cv2.hconcat([live_crop_bgr, matched_template_bgr])
+                save_filename = f"debug_match_score_{score:.2f}.jpg"
+                cv2.imwrite(save_filename, debug_concat)
+                
                 print(f"{'#'*30}")
-                print(f"DEBUG: Saved winning live crop to 'debug_match_score_{score:.2f}.jpg'")
+                print(f"DEBUG: Saved side-by-side view to '{save_filename}'")
                 print(f"DEBUG: This matched against Template Index #{matched_template_idx}")
                 print(f"{'#'*30}")
                 # ------------------------------------------
