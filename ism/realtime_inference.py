@@ -251,7 +251,7 @@ class RealTimeObjectTracker:
         self.state = "ACQUISITION"
         self.templates_cls = None
         self.tracking_threshold = 0.0 # SAM2 logit tracking threshold
-        self.acquisition_threshold = 0.5 # DINOv2 Cosine Similarity threshold
+        self.acquisition_threshold = 0.7 # DINOv2 Cosine Similarity threshold
 
     def load_templates(self, template_dir):
         """
@@ -470,29 +470,29 @@ if __name__ == "__main__":
     # 3. Real-Time Inference Loop
     # ==========================================
     ######################## Video Playback ########################
-    # source = int(args.video_source) if args.video_source.isdigit() else args.video_source
-    # cap = cv2.VideoCapture(source)
-    # # Grab the width and height from the camera stream
-    # frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    # frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    # # If reading from a video file, use: fps_out = cap.get(cv2.CAP_PROP_FPS)
-    # if not cap.isOpened():
-    #     raise RuntimeError(f"Failed to open video source: {source}")
+    source = int(args.video_source) if args.video_source.isdigit() else args.video_source
+    cap = cv2.VideoCapture(source)
+    # Grab the width and height from the camera stream
+    frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    # If reading from a video file, use: fps_out = cap.get(cv2.CAP_PROP_FPS)
+    if not cap.isOpened():
+        raise RuntimeError(f"Failed to open video source: {source}")
     
     ######################## Set up Realsense Camera ########################
-    frame_width = 640
-    frame_height = 480
-    pipe = rs.pipeline()
-    cfg = rs.config()
-    aligner = rs.align(rs.stream.color)
+    # frame_width = 640
+    # frame_height = 480
+    # pipe = rs.pipeline()
+    # cfg = rs.config()
+    # aligner = rs.align(rs.stream.color)
 
-    cfg.enable_stream(rs.stream.color, frame_width, frame_height, rs.format.bgr8, 30)
-    cfg.enable_stream(rs.stream.depth, frame_width, frame_height, rs.format.z16, 30)
+    # cfg.enable_stream(rs.stream.color, frame_width, frame_height, rs.format.bgr8, 30)
+    # cfg.enable_stream(rs.stream.depth, frame_width, frame_height, rs.format.z16, 30)
 
-    pipe.start(cfg)
+    # pipe.start(cfg)
 
     ######################## Set up Output videofile ########################
-    fps_out = 30
+    fps_out = 15
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     video_path = "../results/seg_output.mp4"
     out_video = cv2.VideoWriter(video_path, fourcc, fps_out, (frame_width, frame_height))
@@ -504,19 +504,20 @@ if __name__ == "__main__":
     try:
         while True:
             ######## Capture from video ########
-            # ret, frame = cap.read()
-            # if not ret: 
-            #     print("End of stream.")
-            #     break
+            ret, color_image = cap.read()
+            if not ret: 
+                print("End of stream.")
+                break
             ####################################
 
             ######## Capture from Realsense ########
-            frame_ = pipe.wait_for_frames()
-            frame = aligner.process(frame_)
-            color_frame = frame.get_color_frame()
-            depth_frame = frame.get_depth_frame()
-            color_image = np.asanyarray(color_frame.get_data())
-            depth_image = np.asanyarray(depth_frame.get_data())
+            # frame_ = pipe.wait_for_frames()
+            # frame = aligner.process(frame_)
+            # color_frame = frame.get_color_frame()
+            # depth_frame = frame.get_depth_frame()
+            # color_image = np.asanyarray(color_frame.get_data())
+            # depth_image = np.asanyarray(depth_frame.get_data())
+            ########################################
 
             mask, state, fps = pipeline.process_frame(color_image)
             num_frames += 1
@@ -546,8 +547,8 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print("\nManually stopped recording via Ctrl+C.")
 
-    # cap.release()
-    pipe.stop()
+    cap.release()
+    # pipe.stop()
     out_video.release() # CRITICAL: This finalizes and saves the mp4 file
     print(f"Video saved successfully to {video_path}")
     cv2.destroyAllWindows()
