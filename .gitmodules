@@ -1,0 +1,6 @@
+[submodule "megapose6d"]
+	path = megapose6d
+	url = https://github.com/shrikadam/megapose6d
+[submodule "sam2_realtime"]
+	path = sam2_realtime
+	url = https://github.com/shrikadam/sam2_realtime
