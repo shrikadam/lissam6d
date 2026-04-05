@@ -24,6 +24,13 @@ def clear_cuda_memory():
 from collections import OrderedDict
 import torchvision.transforms as T
 
+if torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 8:
+    BEST_PRECISION = torch.bfloat16
+    print("Using bfloat16 (High dynamic range)")
+else:
+    BEST_PRECISION = torch.float16
+    print("Using float16 (Requires gradient scaling)")
+
 class SAM2VideoDetectorWrapper:
     def __init__(self, predictor, max_memory_frames=60):
         """
@@ -70,7 +77,7 @@ class SAM2VideoDetectorWrapper:
         
         # 3. Inject the golden mask from DINOv2
         # SAM 2 API uses add_new_mask which requires a tensor/numpy array of shape (H, W)
-        with torch.autocast(device_type=self.predictor.device.type, dtype=torch.bfloat16):
+        with torch.autocast(device_type=self.predictor.device.type, dtype=BEST_PRECISION):
             _, _, video_res_masks = self.predictor.add_new_mask(
                 inference_state=self.inference_state,
                 frame_idx=self.frame_idx,
@@ -89,7 +96,7 @@ class SAM2VideoDetectorWrapper:
         self._append_frame(frame_rgb)
         
         # 2. Preflight (Consolidates memory bank)
-        with torch.autocast(device_type=self.predictor.device.type, dtype=torch.bfloat16):
+        with torch.autocast(device_type=self.predictor.device.type, dtype=BEST_PRECISION):
             self.predictor.propagate_in_video_preflight(self.inference_state)
             
             # 3. Manually run the single frame inference
@@ -213,7 +220,7 @@ class DINOv2DescriptorWrapper:
         
         for start_idx in range(0, N, chunk_size):
             end_idx = min(start_idx + chunk_size, N)
-            chunk = batch_crops[start_idx:end_idx].to(torch.bfloat16) # Ensure bfloat16
+            chunk = batch_crops[start_idx:end_idx].to(BEST_PRECISION) # Ensure bfloat16
             
             features = self.model.forward_features(chunk)
             all_cls.append(features["x_norm_clstoken"])
@@ -323,9 +330,9 @@ class RealTimeObjectTracker:
         template_tensor_batch = self.img_descriptor.normalize(template_tensor_batch)
         
         # Pass the batch through DINOv2 to get the reference CLS tokens
-        with torch.inference_mode(), torch.inference_mode(), torch.autocast(device_type=self.device, dtype=torch.bfloat16):
+        with torch.inference_mode(), torch.inference_mode(), torch.autocast(device_type=self.device, dtype=BEST_PRECISION):
             # Ensure the tensor matches the autocast type
-            template_tensor_batch = template_tensor_batch.to(torch.bfloat16)
+            template_tensor_batch = template_tensor_batch.to(BEST_PRECISION)
 
             features = self.img_descriptor.model.forward_features(template_tensor_batch)
             self.templates_cls = features["x_norm_clstoken"]
@@ -364,7 +371,7 @@ class RealTimeObjectTracker:
 
     def _run_acquisition(self, frame_rgb):
         """Pure, unadulterated SAM AMG + DINOv2 Matching"""
-        with torch.inference_mode(), torch.autocast(device_type=self.device, dtype=torch.bfloat16):
+        with torch.inference_mode(), torch.autocast(device_type=self.device, dtype=BEST_PRECISION):
             # 1. Generate Masks with SAM 2 AMG
             # Output is a list of dicts: [{'segmentation': mask, 'bbox': [x,y,w,h], ...}]
             sam_outputs = self.seg_generator.generate(frame_rgb)
@@ -378,7 +385,7 @@ class RealTimeObjectTracker:
             # Prepare image tensor (C, H, W) in [0, 1] range
             image_tensor = torch.from_numpy(frame_rgb).permute(2, 0, 1).float().to(self.device) / 255.0
 
-            image_tensor = image_tensor.to(torch.bfloat16)
+            image_tensor = image_tensor.to(BEST_PRECISION)
             
             # 2. Extract Descriptors
             query_cls, _ = self.img_descriptor.process_and_get_descriptors(image_tensor, masks, boxes)
@@ -446,9 +453,9 @@ if __name__ == "__main__":
     sam2_config = "configs/sam2.1/sam2.1_hiera_t.yaml"
     
     img_descriptor = DINOv2DescriptorWrapper(device=DEVICE)
-    img_descriptor.model = img_descriptor.model.to(torch.bfloat16)
+    img_descriptor.model = img_descriptor.model.to(BEST_PRECISION)
     # Build the SAM 2 Video Predictor for the Tracking phase
-    seg_tracker = build_sam2_video_predictor(sam2_config, sam2_checkpoint, device=DEVICE).to(torch.bfloat16)
+    seg_tracker = build_sam2_video_predictor(sam2_config, sam2_checkpoint, device=DEVICE).to(BEST_PRECISION)
     # The AMG will ignore the video memory modules and just use the base image methods.
     seg_generator = SAM2AutomaticMaskGenerator(
         model=seg_tracker,

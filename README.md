@@ -1,35 +1,6 @@
-## Model-based realtime 6D detection with RGB-D camera
+## Model-based realtime 6D detection with RGB-only videostream
 
-### 1. Environment Setup
-CUDA versions should match between GPU Driver, CUDA Toolkit and PyTorch.
-```shell
-conda create -n sam6d python=3.10
-conda activate sam6d
-conda install cuda=12.8
-pip3 install torch torchvision --index-url https://download.pytorch.org/whl/cu128
-pip install -r requirements.txt
-```
-Build Pointnet++ extensions for PEM.
-```shell
-cd Pose_Estimation_Model/model/pointnet2
-python setup.py install
-```
-Download SAM, Dino V2 and PEM weights.
-```shell
-python download_weights.py
-```
-
-### 2. Evaluation on the camera stream
-
-#### Run the template render (one-time)
-```shell
-blenderproc run render_templates.py --object bolt
-```
-
-#### Run the inference
-```shell
-python run_inference_camera.py --object bolt
-```
+[![Watch the video](https://raw.githubusercontent.com/shrikadam/lissam6d/main/megapose6d/results/thumbnail.png)](https://raw.githubusercontent.com/shrikadam/lissam6d/main/megapose6d/results/final_tracked_servo.mp4)
 
 ## Citation
 ```
