@@ -1,6 +1,8 @@
 ## Model-based realtime 6D detection with RGB-only videostream
 
-[![Watch the video](https://raw.githubusercontent.com/shrikadam/lissam6d/main/megapose6d/results/thumbnail.png)](https://raw.githubusercontent.com/shrikadam/lissam6d/main/megapose6d/results/final_tracked_servo.mp4)
+![Demo](results/3dbenchy.gif)
+
+*Real-time inference on 3DBenchy object*
 
 ## Citation
 ```
